@@ -1,0 +1,7 @@
+---
+BasedOnStyle: Google
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+# One-line bodies only for short methods defined inside a class, never for TESTs.
+AllowShortFunctionsOnASingleLine: Inline
