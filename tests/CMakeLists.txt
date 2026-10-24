@@ -13,6 +13,7 @@ add_executable(vecdex_tests
     brute_force_test.cpp
     distance_test.cpp
     io_test.cpp
+    kernels_test.cpp
     matrix_test.cpp
     recall_test.cpp
     siftsmall_test.cpp

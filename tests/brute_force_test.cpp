@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <numeric>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -144,6 +146,117 @@ TEST(BruteForce, MatchesFullRankingOnRandomData) {
             const std::vector<Neighbor> top_k(ranking.begin(),
                                               ranking.begin() + static_cast<std::ptrdiff_t>(k));
             EXPECT_EQ(index.search(query, k), top_k) << "query " << q << ", k " << k;
+        }
+    }
+}
+
+TEST(BruteForce, ReportsItsMetric) {
+    EXPECT_EQ(BruteForceIndex(3).metric(), vecdex::Metric::L2);
+    EXPECT_EQ(BruteForceIndex(3, vecdex::Metric::Cosine).metric(), vecdex::Metric::Cosine);
+}
+
+TEST(BruteForceInnerProduct, RanksByLargestDotProduct) {
+    BruteForceIndex index(2, vecdex::Metric::InnerProduct);
+    index.add(std::vector<float>{1.0F, 0.0F});  // dot with the query: 1
+    index.add(std::vector<float>{0.0F, 2.0F});  // 2
+    index.add(std::vector<float>{3.0F, 3.0F});  // 6
+    const std::vector<Neighbor> expected{{-5.0F, 2}, {-1.0F, 1}, {0.0F, 0}};  // 1 - dot
+    EXPECT_EQ(index.search(std::vector<float>{1.0F, 1.0F}, 3), expected);
+}
+
+// All lengths here are exact in float (sqrt(100) = 10, ...), so exact comparison is safe.
+TEST(BruteForceCosine, IgnoresVectorLength) {
+    BruteForceIndex index(2, vecdex::Metric::Cosine);
+    index.add(std::vector<float>{10.0F, 0.0F});  // same direction as the query, longer
+    index.add(std::vector<float>{0.0F, 0.5F});   // orthogonal
+    index.add(std::vector<float>{-3.0F, 0.0F});  // opposite
+    const std::vector<Neighbor> expected{{0.0F, 0}, {1.0F, 1}, {2.0F, 2}};
+    EXPECT_EQ(index.search(std::vector<float>{2.0F, 0.0F}, 3), expected);
+}
+
+TEST(BruteForceCosine, RejectsZeroVectors) {
+    BruteForceIndex index(2, vecdex::Metric::Cosine);
+    EXPECT_THROW(index.add(std::vector<float>{0.0F, 0.0F}), std::invalid_argument);
+    Matrix<float> batch(2, 2);
+    batch.row(0)[0] = 1.0F;  // row 1 stays all zeros
+    EXPECT_THROW(index.add(batch), std::invalid_argument);
+    EXPECT_EQ(index.size(), 0U);  // the valid row 0 wasn't stored either
+
+    index.add(std::vector<float>{1.0F, 1.0F});
+    EXPECT_THROW(index.search(std::vector<float>{0.0F, 0.0F}, 1), std::invalid_argument);
+}
+
+// The distance under `metric`, computed independently in double precision.
+double reference_distance(vecdex::Metric metric, std::span<const float> a,
+                          std::span<const float> b) {
+    double l2 = 0.0;
+    double dot = 0.0;
+    double norm_a = 0.0;
+    double norm_b = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const double x = a[i];
+        const double y = b[i];
+        l2 += (x - y) * (x - y);
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    switch (metric) {
+        case vecdex::Metric::L2:
+            return l2;
+        case vecdex::Metric::InnerProduct:
+            return 1.0 - dot;
+        case vecdex::Metric::Cosine:
+            return 1.0 - dot / std::sqrt(norm_a * norm_b);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+// On random data, rounding can legitimately swap two near-tied neighbors, so this checks the
+// defining property of exact top-k instead of one specific order: every returned vector is at
+// least as close as the true k-th nearest (in double precision), up to a small tolerance.
+TEST(BruteForce, IsExactUpToRoundingForEveryMetric) {
+    constexpr std::size_t kDim = 24;
+    constexpr std::size_t kBase = 300;
+    constexpr std::size_t kQueries = 10;
+    std::mt19937 rng(5);  // fixed seed: any failure reproduces exactly
+    std::uniform_real_distribution<float> uniform(-1.0F, 1.0F);
+    Matrix<float> base(kBase, kDim);
+    for (float& v : base.data()) {
+        v = uniform(rng);
+    }
+    const auto tolerance = [](double reference) { return 1e-5 * (1.0 + std::abs(reference)); };
+
+    for (const auto metric :
+         {vecdex::Metric::L2, vecdex::Metric::InnerProduct, vecdex::Metric::Cosine}) {
+        BruteForceIndex index(kDim, metric);
+        index.add(base);
+        std::vector<float> query(kDim);
+        for (std::size_t q = 0; q < kQueries; ++q) {
+            for (float& v : query) {
+                v = uniform(rng);
+            }
+            std::vector<double> reference(kBase);
+            for (std::size_t i = 0; i < kBase; ++i) {
+                reference[i] = reference_distance(metric, query, base.row(i));
+            }
+            std::vector<double> sorted = reference;
+            std::ranges::sort(sorted);
+
+            for (const std::size_t k : std::array<std::size_t, 3>{1, 10, 50}) {
+                const auto result = index.search(query, k);
+                ASSERT_EQ(result.size(), k);
+                const double kth = sorted[k - 1];
+                std::vector<vecdex::Id> ids;
+                for (const Neighbor& n : result) {
+                    ids.push_back(n.id);
+                    EXPECT_LE(reference[n.id], kth + tolerance(kth))
+                        << "metric " << static_cast<int>(metric) << ", query " << q << ", k " << k;
+                    EXPECT_NEAR(n.distance, reference[n.id], tolerance(reference[n.id]));
+                }
+                std::ranges::sort(ids);
+                EXPECT_EQ(std::ranges::adjacent_find(ids), ids.end()) << "duplicate id";
+            }
         }
     }
 }

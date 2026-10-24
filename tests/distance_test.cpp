@@ -41,4 +41,21 @@ TEST(L2Squared, MatchesIntegerArithmeticAtDim128) {
     EXPECT_EQ(l2_squared(a, b), static_cast<float>(expected));
 }
 
+TEST(InnerProduct, KnownValues) {
+    const std::vector<float> a{1.0F, 2.0F, 3.0F};
+    const std::vector<float> b{4.0F, -5.0F, 6.0F};
+    EXPECT_EQ(vecdex::inner_product(a, b), 12.0F);  // 4 - 10 + 18
+    EXPECT_EQ(vecdex::inner_product(b, a), 12.0F);
+    EXPECT_EQ(vecdex::inner_product({}, {}), 0.0F);
+}
+
+TEST(Distance, FollowsEachMetricsConvention) {
+    const std::vector<float> a{1.0F, 0.0F};
+    const std::vector<float> b{0.0F, 1.0F};
+    EXPECT_EQ(vecdex::distance(vecdex::Metric::L2, a, b), 2.0F);
+    EXPECT_EQ(vecdex::distance(vecdex::Metric::InnerProduct, a, b), 1.0F);  // 1 - 0
+    EXPECT_EQ(vecdex::distance(vecdex::Metric::Cosine, a, a), 0.0F);        // same direction
+    EXPECT_EQ(vecdex::distance(vecdex::Metric::Cosine, a, b), 1.0F);        // orthogonal
+}
+
 }  // namespace

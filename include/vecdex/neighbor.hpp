@@ -11,7 +11,7 @@ using Id = std::uint32_t;
 
 // One search result.
 struct Neighbor {
-    float distance;  // squared L2 distance to the query
+    float distance;  // to the query, under the index's Metric: smaller is closer
     Id id;
 
     friend bool operator==(const Neighbor&, const Neighbor&) = default;

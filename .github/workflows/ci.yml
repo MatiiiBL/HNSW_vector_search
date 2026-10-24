@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86-64 · ${{ matrix.cxx }} · ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++-14, clang++-18]
+        preset: [asan, release]
+    env:
+      CXX: ${{ matrix.cxx }}
+      # Fails the kernel tests if this runner can't run the AVX2 path, instead of silently
+      # testing only the scalar kernels.
+      VECDEX_EXPECT_ISA: avx2
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore siftsmall
+        id: siftsmall
+        uses: actions/cache@v6
+        with:
+          path: data/siftsmall
+          key: siftsmall-b8f1e59b
+
+      - name: Download siftsmall
+        if: steps.siftsmall.outputs.cache-hit != 'true'
+        run: scripts/download_siftsmall.sh
+
+      # Recent Ubuntu kernels randomize mmap addresses with more bits than the sanitizer
+      # runtimes expect, which makes ASan crash at startup.
+      - name: Make the kernel ASan-compatible
+        if: matrix.preset == 'asan'
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Configure, build and test
+        run: cmake --workflow --preset ${{ matrix.preset }}
+
+      - name: Smoke-run the benchmarks (one iteration each; CI timings are too noisy to record)
+        if: matrix.preset == 'release'
+        run: build/release/bench/vecdex_bench --benchmark_min_time=1x
+
+  valgrind:
+    name: Linux x86-64 · Valgrind memcheck
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore siftsmall
+        id: siftsmall
+        uses: actions/cache@v6
+        with:
+          path: data/siftsmall
+          key: siftsmall-b8f1e59b
+
+      - name: Download siftsmall
+        if: steps.siftsmall.outputs.cache-hit != 'true'
+        run: scripts/download_siftsmall.sh
+
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install --yes valgrind
+
+      - name: "Build (Debug, no sanitizers: Valgrind and ASan can't be combined)"
+        run: |
+          cmake --preset debug
+          cmake --build --preset debug
+
+      # Catches reads of uninitialized memory, which ASan doesn't detect.
+      - name: Run the tests under memcheck
+        run: >
+          valgrind --error-exitcode=1 --leak-check=full
+          --errors-for-leak-kinds=definite,indirect --track-origins=yes
+          build/debug/tests/vecdex_tests
+
+  macos:
+    name: macOS arm64 · Apple clang · ${{ matrix.preset }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [asan, release]
+    env:
+      VECDEX_EXPECT_ISA: neon
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore siftsmall
+        id: siftsmall
+        uses: actions/cache@v6
+        with:
+          path: data/siftsmall
+          key: siftsmall-b8f1e59b
+
+      - name: Download siftsmall
+        if: steps.siftsmall.outputs.cache-hit != 'true'
+        run: scripts/download_siftsmall.sh
+
+      - name: Configure, build and test
+        run: cmake --workflow --preset ${{ matrix.preset }}
+
+      - name: Smoke-run the benchmarks (one iteration each)
+        if: matrix.preset == 'release'
+        run: build/release/bench/vecdex_bench --benchmark_min_time=1x

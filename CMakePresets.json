@@ -30,7 +30,10 @@
             "name": "release",
             "displayName": "Release (-O3 -DNDEBUG)",
             "inherits": "base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "VECDEX_BUILD_BENCHMARKS": "ON"
+            }
         }
     ],
     "buildPresets": [
