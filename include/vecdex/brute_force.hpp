@@ -36,7 +36,6 @@ public:
     std::vector<Neighbor> search(std::span<const float> query, std::size_t k) const;
 
 private:
-    void check_can_add(std::span<const float> values, std::size_t count) const;
     void store(std::span<const float> values);
 
     Metric metric_;

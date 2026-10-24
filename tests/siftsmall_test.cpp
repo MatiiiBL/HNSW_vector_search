@@ -5,8 +5,10 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <string>
 
 #include "vecdex/brute_force.hpp"
+#include "vecdex/hnsw.hpp"
 #include "vecdex/io.hpp"
 #include "vecdex/recall.hpp"
 
@@ -65,6 +67,37 @@ TEST_F(SiftSmall, BruteForceReproducesGroundTruth) {
         }
         EXPECT_DOUBLE_EQ(total / static_cast<double>(queries.rows()), 1.0) << "mean recall@" << k;
     }
+}
+
+// M3's acceptance test: recall@10 >= 0.99 against the published ground truth at some ef, on
+// a healthy, fully connected graph. efConstruction is 100 rather than the benchmark's 200 to
+// keep the sanitizer build quick. Measured (2026-10-24): 0.961 / 0.997 / 1.000 at
+// ef = 16 / 64 / 128.
+TEST_F(SiftSmall, HnswReachesHighRecall) {
+    const auto base = vecdex::read_fvecs(dataset_dir() / "siftsmall_base.fvecs");
+    const auto queries = vecdex::read_fvecs(dataset_dir() / "siftsmall_query.fvecs");
+    const auto truth = vecdex::read_ivecs(dataset_dir() / "siftsmall_groundtruth.ivecs");
+
+    vecdex::HnswIndex index(base.dim(), vecdex::Metric::L2, {.M = 16, .ef_construction = 100});
+    index.add(base);
+    const vecdex::GraphReport report = index.inspect();
+    EXPECT_TRUE(report.violations.empty()) << report.violations.front();
+    EXPECT_EQ(report.reachable, base.rows());
+
+    constexpr std::size_t kK = 10;
+    double recall_at_128 = 0.0;
+    for (const std::size_t ef : {std::size_t{16}, std::size_t{64}, std::size_t{128}}) {
+        double total = 0.0;
+        for (std::size_t q = 0; q < queries.rows(); ++q) {
+            total += vecdex::recall_at_k(index.search(queries.row(q), kK, ef), truth.row(q), kK);
+        }
+        const double recall = total / static_cast<double>(queries.rows());
+        RecordProperty("recall_ef" + std::to_string(ef), std::to_string(recall));
+        if (ef == 128) {
+            recall_at_128 = recall;
+        }
+    }
+    EXPECT_GE(recall_at_128, 0.99);
 }
 
 }  // namespace

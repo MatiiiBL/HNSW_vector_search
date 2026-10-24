@@ -34,10 +34,12 @@ target_compile_options(vecdex_warnings INTERFACE
 add_library(vecdex
     src/brute_force.cpp
     src/distance.cpp
+    src/hnsw.cpp
     src/io.cpp
     src/kernels.cpp
     src/kernels_scalar.cpp
-    src/recall.cpp)
+    src/recall.cpp
+    src/vector_ops.cpp)
 add_library(vecdex::vecdex ALIAS vecdex)
 
 # SIMD kernels for the target architecture(s). Each file is also guarded by the preprocessor

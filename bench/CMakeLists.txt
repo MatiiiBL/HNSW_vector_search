@@ -25,3 +25,7 @@ target_link_libraries(vecdex_bench PRIVATE
 
 target_compile_definitions(vecdex_bench PRIVATE
     VECDEX_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+
+# Recall-vs-QPS evaluation of HNSW on a full dataset (the start of M4's harness).
+add_executable(vecdex_eval hnsw_eval.cpp)
+target_link_libraries(vecdex_eval PRIVATE vecdex::vecdex vecdex_warnings)
