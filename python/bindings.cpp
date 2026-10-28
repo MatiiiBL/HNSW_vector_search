@@ -73,6 +73,15 @@ std::size_t positive(std::int64_t value, std::string_view name) {
     return static_cast<std::size_t>(value);
 }
 
+// num_threads as the C++ API takes it, where 0 means one thread per hardware thread.
+std::size_t thread_count(std::int64_t value) {
+    if (value < 0) {
+        throw py::value_error(std::format(
+            "num_threads must be positive, or 0 for one per hardware thread, got {}", value));
+    }
+    return static_cast<std::size_t>(value);
+}
+
 // True if the buffer holds native-endian 4-byte floats. NumPy describes an aligned float32
 // array as "f" but an unaligned one as "=f", so a native byte-order prefix is accepted here and
 // alignment is checked separately.
@@ -198,8 +207,9 @@ public:
         return index_.memory_bytes();
     }
 
-    py::array_t<std::int64_t> add_items(const py::buffer& data) {
+    py::array_t<std::int64_t> add_items(const py::buffer& data, std::int64_t num_threads) {
         const Rows rows(data, dim(), "add_items");
+        const std::size_t threads = thread_count(num_threads);
         // Allocated before adding, so a failed allocation can't leave vectors added without ids.
         py::array_t<std::int64_t> ids(static_cast<py::ssize_t>(rows.count()));
         std::size_t first = 0;
@@ -209,7 +219,7 @@ public:
             first = index_.size();
             // HnswIndex::add checks the whole batch before it stores any row, so a rejected call
             // adds nothing.
-            index_.add(rows.view());
+            index_.add(rows.view(), threads);
         }
         const std::span<std::int64_t> out(ids.mutable_data(), rows.count());
         std::iota(out.begin(), out.end(), static_cast<std::int64_t>(first));
@@ -217,10 +227,12 @@ public:
     }
 
     std::pair<py::array_t<std::int64_t>, py::array_t<float>> knn_query(
-        const py::buffer& data, std::int64_t k, std::optional<std::int64_t> ef) const {
+        const py::buffer& data, std::int64_t k, std::optional<std::int64_t> ef,
+        std::int64_t num_threads) const {
         const Rows queries(data, dim(), "knn_query");
         const std::size_t want = positive(k, "k");
         const std::size_t breadth = ef ? positive(*ef, "ef") : ef_;
+        const std::size_t threads = thread_count(num_threads);
         // Results go straight into new NumPy arrays: one allocation each, no per-row objects.
         const std::vector<py::ssize_t> shape{static_cast<py::ssize_t>(queries.count()),
                                              static_cast<py::ssize_t>(want)};
@@ -228,23 +240,35 @@ public:
         py::array_t<float> distances(shape);
         const std::span<std::int64_t> all_ids(ids.mutable_data(), queries.count() * want);
         const std::span<float> all_distances(distances.mutable_data(), queries.count() * want);
+        const auto write_row = [&](std::size_t q, std::span<const vecdex::Neighbor> found) {
+            const std::span<std::int64_t> row_ids = all_ids.subspan(q * want, want);
+            const std::span<float> row_distances = all_distances.subspan(q * want, want);
+            for (std::size_t i = 0; i < want; ++i) {
+                if (i < found.size()) {
+                    row_ids[i] = found[i].id;
+                    row_distances[i] = found[i].distance;
+                } else {  // fewer than k vectors in the index (or, rarely, reachable)
+                    row_ids[i] = -1;
+                    row_distances[i] = std::numeric_limits<float>::infinity();
+                }
+            }
+        };
         {
             const py::gil_scoped_release release;
             const std::shared_lock lock(mutex_);
             const vecdex::MatrixView<float> rows = queries.view();
-            for (std::size_t q = 0; q < rows.rows(); ++q) {
-                const std::vector<vecdex::Neighbor> found =
-                    index_.search(rows.row(q), want, breadth);
-                const std::span<std::int64_t> row_ids = all_ids.subspan(q * want, want);
-                const std::span<float> row_distances = all_distances.subspan(q * want, want);
-                for (std::size_t i = 0; i < want; ++i) {
-                    if (i < found.size()) {
-                        row_ids[i] = found[i].id;
-                        row_distances[i] = found[i].distance;
-                    } else {  // fewer than k vectors in the index (or, rarely, reachable)
-                        row_ids[i] = -1;
-                        row_distances[i] = std::numeric_limits<float>::infinity();
-                    }
+            if (threads == 1) {
+                // Each result is written out before the next search, so none pile up.
+                for (std::size_t q = 0; q < rows.rows(); ++q) {
+                    write_row(q, index_.search(rows.row(q), want, breadth));
+                }
+            } else {
+                // search_batch returns every result before any can be written out: about
+                // n * k * 8 bytes held at once, the price of searching in parallel.
+                const std::vector<std::vector<vecdex::Neighbor>> found =
+                    index_.search_batch(rows, want, breadth, threads);
+                for (std::size_t q = 0; q < found.size(); ++q) {
+                    write_row(q, found[q]);
                 }
             }
         }
@@ -285,25 +309,32 @@ PYBIND11_MODULE(_core, m) {
 
         Input arrays must already be float32 and C-contiguous: they are read in place, and
         nothing is converted silently. Several threads may use one index: searches run in
-        parallel with each other, and add_items runs alone. Both release the GIL.
+        parallel with each other, and add_items runs alone. Both release the GIL. add_items and
+        knn_query can also spread one call over several threads (num_threads).
     )doc")
         .def(py::init<std::string_view, std::int64_t, std::int64_t, std::int64_t, std::uint64_t>(),
              py::arg("space"), py::arg("dim"), py::arg("M") = defaults.M,
              py::arg("ef_construction") = defaults.ef_construction, py::arg("seed") = defaults.seed)
-        .def("add_items", &PyIndex::add_items, py::arg("data"), R"doc(
+        .def("add_items", &PyIndex::add_items, py::arg("data"), py::kw_only(),
+             py::arg("num_threads") = 1, R"doc(
             Adds vectors and returns their ids: consecutive int64 values from len(self) on.
 
             Args:
                 data: a float32, C-contiguous array of shape (n, dim), or (dim,) for one vector.
                     It is read in place, not copied.
+                num_threads: threads that link the batch into the graph; 0 means one per
+                    hardware thread. With 1, the default, the graph is the one adding the
+                    vectors one at a time builds, the same on every run. More threads build an
+                    equally good graph faster, but it depends on how the threads interleave, so
+                    it can differ from run to run.
 
             Raises TypeError if data isn't float32, and ValueError for a wrong shape, a
-            non-contiguous or unaligned array, NaN or infinite values, or, under 'cosine', a
-            zero vector. The whole batch is checked before any of it is stored, so a rejected
-            call adds nothing.
+            non-contiguous or unaligned array, NaN or infinite values, under 'cosine' a zero
+            vector, or a negative num_threads. The whole batch is checked before any of it is
+            stored, so a rejected call adds nothing.
         )doc")
         .def("knn_query", &PyIndex::knn_query, py::arg("data"), py::arg("k") = 1,
-             py::arg("ef") = py::none(), R"doc(
+             py::arg("ef") = py::none(), py::kw_only(), py::arg("num_threads") = 1, R"doc(
             Finds the k approximate nearest neighbors of each query.
 
             Args:
@@ -311,6 +342,9 @@ PYBIND11_MODULE(_core, m) {
                 k: neighbors per query.
                 ef: the search breadth, the recall-versus-speed dial; None uses self.ef.
                     Values below k act as k.
+                num_threads: threads that share the queries; 0 means one per hardware thread.
+                    The results are the same for any value. With 1, the default, the queries
+                    run one after another on the calling thread.
 
             Returns:
                 (ids, distances): int64 and float32 arrays of shape (n, k), each row closest

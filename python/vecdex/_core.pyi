@@ -15,9 +15,16 @@ class Index:
         ef_construction: int = 200,
         seed: int = 42,
     ) -> None: ...
-    def add_items(self, data: npt.NDArray[np.float32]) -> npt.NDArray[np.int64]: ...
+    def add_items(
+        self, data: npt.NDArray[np.float32], *, num_threads: int = 1
+    ) -> npt.NDArray[np.int64]: ...
     def knn_query(
-        self, data: npt.NDArray[np.float32], k: int = 1, ef: int | None = None
+        self,
+        data: npt.NDArray[np.float32],
+        k: int = 1,
+        ef: int | None = None,
+        *,
+        num_threads: int = 1,
     ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float32]]: ...
     @property
     def ef(self) -> int: ...
