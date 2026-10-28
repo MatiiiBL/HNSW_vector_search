@@ -49,6 +49,26 @@ The magic's first byte is not ASCII (the same trick PNG uses), so no text file c
 
 The metric codes are part of the format. They are not the values of the C++ `Metric` enum, which the code maps explicitly.
 
+### Example
+
+The header of a 12-node index (dim 2, M = 2, ef_construction 8, seed 42, L2), the one the corruption tests use:
+
+```
+00000000: 8956 4458 484e 5357 0100 0000 0000 0000  .VDXHNSW........
+00000010: 0200 0000 0000 0000 0200 0000 0000 0000  ................
+00000020: 0800 0000 0000 0000 2a00 0000 0000 0000  ........*.......
+00000030: 0c00 0000 0000 0000 0300 0000 0000 0000  ................
+00000040: 0400 0000 0000 0000 0a00 0000 0000 0000  ................
+```
+
+That is magic, version 1, metric 0, dim 2, M 2, ef_construction 8, seed 42, n = 12, max level 3, entry point 4, U = 10. The file is 88 + 12 + 4·12·5 + 4·10·3 + 4·12·2 = 556 bytes. In Python:
+
+```python
+import struct
+magic, version, metric, dim, M, ef_construction, seed, n, max_level, entry_point, U = \
+    struct.unpack("<8sII8Q", open("index.vdx", "rb").read(80))
+```
+
 ## Sections
 
 ### Levels
