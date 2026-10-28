@@ -24,6 +24,9 @@ vectors = np.random.default_rng(0).standard_normal((10_000, 128), dtype=np.float
 index = vecdex.Index("cosine", dim=128, M=16, ef_construction=200)
 ids = index.add_items(vectors, num_threads=4)           # int64: 0, 1, ..., 9999
 labels, distances = index.knn_query(vectors[:5], k=10)  # both of shape (5, 10)
+
+index.save("vectors.vdx")
+index = vecdex.Index.load("vectors.vdx")                # space, dim, M, ... from the file
 ```
 
 ## API
@@ -34,6 +37,8 @@ labels, distances = index.knn_query(vectors[:5], k=10)  # both of shape (5, 10)
 | `add_items(data, *, num_threads=1) -> ids` | adds vectors; ids are consecutive from `len(index)` |
 | `knn_query(data, k=1, ef=None, *, num_threads=1) -> (ids, distances)` | `ef=None` uses `index.ef` |
 | `ef`, `set_ef(ef)` | search breadth, the recall-versus-speed dial (default 64) |
+| `save(path)` | writes the index to a file; `path` is a `str` or `os.PathLike` |
+| `Index.load(path) -> Index` | reads an index written by `save` |
 | `len(index)`, `dim`, `space`, `M`, `ef_construction` | |
 | `memory_bytes()` | bytes held by vectors and graph links |
 
@@ -55,7 +60,8 @@ labels, distances = index.knn_query(vectors[:5], k=10)  # both of shape (5, 10)
 - **Distances:** `"l2"` is the *squared* Euclidean distance, `"ip"` is `1 - <q, x>`, and
   `"cosine"` is `1 - cos(q, x)`. Cosine normalizes copies of your vectors, never your arrays.
 - **Errors:** `ValueError` for bad arguments and values (dimension mismatch, NaN or inf, a zero
-  vector under cosine, `k < 1`, `num_threads < 0`), `TypeError` for wrong types.
+  vector under cosine, `k < 1`, `num_threads < 0`), `TypeError` for wrong types, and
+  `RuntimeError` for a file that can't be saved or loaded.
 
 ## Threads
 
@@ -66,11 +72,21 @@ labels, distances = index.knn_query(vectors[:5], k=10)  # both of shape (5, 10)
   - `add_items` with `num_threads=1` builds the same graph as adding the vectors one at a time,
     on every run (with the same `seed`). More threads build an equally good graph faster, but it
     depends on how the threads interleave, so it can differ from run to run.
-- **Several Python threads on one index:** `add_items` and `knn_query` release the GIL.
-  Queries from several threads run in parallel; an `add_items` waits for running queries and
-  runs alone. Don't modify an array while a call that reads it is running.
+- **Several Python threads on one index:** `add_items`, `knn_query`, `save` and `load` release
+  the GIL. Queries and saves from several threads run in parallel; an `add_items` waits for them
+  and runs alone. Don't modify an array while a call that reads it is running.
 
-Saving and loading will follow.
+## Saving and loading
+
+- `index.save(path)` writes the vectors, the graph and the build parameters (space, dim, M,
+  ef_construction, seed). The file appears complete or not at all: it is written to a temporary
+  file next to `path`, flushed to storage and renamed into place, replacing any file there.
+- `vecdex.Index.load(path)` returns a new index with the file's parameters. **`ef` isn't
+  saved:** a loaded index starts at the default, 64. Adding to a loaded index builds the same
+  graph as adding to the index that was saved.
+- A missing, truncated, corrupted or foreign file raises `RuntimeError` with the path and the
+  reason; load checks sizes, a checksum and the graph before using anything in the file. The
+  format is little-endian and documented in `docs/FORMAT.md`.
 
 ## Development
 

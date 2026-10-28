@@ -1,6 +1,6 @@
-"""vecdex.Index and threads: add_items and knn_query release the GIL, the index's reader-writer
-lock keeps concurrent calls safe and their results unchanged, and num_threads spreads one call
-over several threads."""
+"""vecdex.Index and threads: add_items, knn_query, save and load release the GIL, the index's
+reader-writer lock keeps concurrent calls safe and their results unchanged, and num_threads
+spreads one call over several threads."""
 
 import math
 import threading
@@ -107,6 +107,21 @@ def test_add_items_releases_the_gil(num_threads):
     assert python_ticks_during(lambda: build(batch, num_threads)) > 0
 
 
+def test_save_and_load_release_the_gil(tmp_path):
+    # Both take time in proportion to the file's size. 1024 vectors of 32,768 floats make a
+    # 134 MB file with a quick build; saving it took about 50 ms here and loading it 25 ms, so
+    # the quarter-call margins still exceed the switch interval.
+    dim = 1 << 15
+    index = vecdex.Index("l2", dim, M=2, ef_construction=4)
+    index.add_items(np.random.default_rng(0).random((1024, dim), dtype=np.float32))
+    path = tmp_path / "index.vdx"
+    try:
+        assert python_ticks_during(lambda: index.save(path)) > 0
+        assert python_ticks_during(lambda: vecdex.Index.load(path)) > 0
+    finally:
+        path.unlink(missing_ok=True)  # pytest keeps the last few runs' tmp_path
+
+
 # --- The reader-writer lock -----------------------------------------------------------------
 
 
@@ -183,6 +198,27 @@ def test_queries_during_parallel_adds_are_safe():
 
     assert searches_during(index, random_vectors(50, seed=99), add_all) > 0
     assert len(index) == 2500
+
+
+def test_saves_during_adds_hold_whole_batches(tmp_path):
+    # A save takes the lock shared, so it waits for a running add_items: each file holds the
+    # index between two batches, never part of one.
+    index = build(random_vectors(500))
+    paths = []
+
+    def add_all() -> None:
+        for seed in range(1, 21):
+            index.add_items(random_vectors(100, seed=seed))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        adding = pool.submit(add_all)
+        while not adding.done():
+            paths.append(tmp_path / f"{len(paths)}.vdx")
+            index.save(paths[-1])
+        adding.result()
+    assert paths, "no save overlapped the adds"
+    for path in paths:
+        assert len(vecdex.Index.load(path)) % 100 == 0
 
 
 # --- num_threads ----------------------------------------------------------------------------

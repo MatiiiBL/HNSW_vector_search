@@ -5,12 +5,15 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/stl/filesystem.h>
 
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -174,9 +177,9 @@ private:
 //
 // With the GIL released, Python threads really do run these methods at the same time, so a
 // reader-writer lock enforces HnswIndex's contract rather than trusting every caller to: any
-// number of searches at once, an add only alone. Each method takes the lock after releasing the
-// GIL and never needs the GIL while holding the lock, so the two can't deadlock. ef_ is state of
-// the binding only; it is read and written with the GIL held.
+// number of searches and saves at once, an add only alone. Each method takes the lock after
+// releasing the GIL and never needs the GIL while holding the lock, so the two can't deadlock.
+// ef_ is state of the binding only; it is read and written with the GIL held, and not saved.
 class PyIndex {
 public:
     PyIndex(std::string_view space, std::int64_t dim, std::int64_t m, std::int64_t ef_construction,
@@ -185,6 +188,9 @@ public:
                  {.M = positive(m, "M"),
                   .ef_construction = positive(ef_construction, "ef_construction"),
                   .seed = seed}) {}
+
+    // Takes over an index read by HnswIndex::load.
+    explicit PyIndex(HnswIndex index) noexcept : index_(std::move(index)) {}
 
     // Fixed at construction, so they need no lock.
     std::size_t dim() const noexcept { return index_.dim(); }
@@ -275,6 +281,19 @@ public:
         return {std::move(ids), std::move(distances)};
     }
 
+    // Like a search, saving only reads the index, so it may overlap searches but not an add.
+    void save(const std::filesystem::path& path) const {
+        const py::gil_scoped_release release;
+        const std::shared_lock lock(mutex_);
+        index_.save(path);
+    }
+
+    static std::unique_ptr<PyIndex> load(const std::filesystem::path& path) {
+        const py::gil_scoped_release release;
+        // A new index that no other thread can reach yet, so it needs no lock.
+        return std::make_unique<PyIndex>(HnswIndex::load(path));
+    }
+
     std::string repr() const {
         return std::format("<vecdex.Index space='{}' dim={} M={} ef_construction={} ef={} len={}>",
                            space(), dim(), m(), ef_construction(), ef_, size());
@@ -308,9 +327,9 @@ PYBIND11_MODULE(_core, m) {
                 order with the same seed build the same graph.
 
         Input arrays must already be float32 and C-contiguous: they are read in place, and
-        nothing is converted silently. Several threads may use one index: searches run in
-        parallel with each other, and add_items runs alone. Both release the GIL. add_items and
-        knn_query can also spread one call over several threads (num_threads).
+        nothing is converted silently. Several threads may use one index: searches and saves
+        run in parallel with each other, and add_items runs alone. All of them release the GIL.
+        add_items and knn_query can also spread one call over several threads (num_threads).
     )doc")
         .def(py::init<std::string_view, std::int64_t, std::int64_t, std::int64_t, std::uint64_t>(),
              py::arg("space"), py::arg("dim"), py::arg("M") = defaults.M,
@@ -350,6 +369,26 @@ PYBIND11_MODULE(_core, m) {
                 (ids, distances): int64 and float32 arrays of shape (n, k), each row closest
                 first. Distances follow the space ('l2' is squared). If fewer than k vectors
                 can be returned (k > len(self)), a row ends with id -1 and distance inf.
+        )doc")
+        .def("save", &PyIndex::save, py::arg("path"), R"doc(
+            Writes the index to path (a str or os.PathLike), replacing any file there.
+
+            The file holds the vectors, the graph and the build parameters, but not ef. It is
+            written to a temporary file in the same directory, flushed to storage and renamed
+            into place, so path never holds a partial index. Searches may run meanwhile; an
+            add_items waits until the save is done.
+
+            Raises RuntimeError, naming the path, if the file can't be written.
+        )doc")
+        .def_static("load", &PyIndex::load, py::arg("path"), R"doc(
+            Reads an index written by save and returns it as a new Index.
+
+            space, dim, M, ef_construction and the seed come from the file. ef isn't saved: it
+            starts at the default, 64. Adding vectors to the loaded index builds the same graph
+            as adding them to the index that was saved.
+
+            Raises RuntimeError, naming the path, if the file is missing or unreadable, or isn't
+            an intact vecdex index (truncated, corrupted, or another format).
         )doc")
         .def_property("ef", &PyIndex::ef, &PyIndex::set_ef,
                       "knn_query's search breadth when its ef argument is None (default 64).")
