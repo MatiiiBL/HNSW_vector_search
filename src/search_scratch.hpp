@@ -1,6 +1,6 @@
 #pragma once
 
-// Internal: the "visited" bookkeeping for graph searches.
+// Internal: the scratch memory of graph searches, pooled so searches don't allocate.
 
 #include <algorithm>
 #include <cassert>
@@ -46,50 +46,59 @@ private:
     std::uint32_t epoch_ = 0;
 };
 
-// Lends VisitedLists to searches, so concurrent searches never share one and each list keeps
-// its memory between searches. The mutex is held only to hand a list out or take it back.
-class VisitedPool {
+// Everything one layer search needs besides the graph. The vectors keep their capacity from one
+// search to the next, so once they have grown to fit, a search allocates nothing.
+struct SearchScratch {
+    VisitedList visited;
+    std::vector<Neighbor> candidates;  // min-heap of nodes still to expand
+    std::vector<Neighbor> results;     // max-heap of the best ef found so far
+};
+
+// Lends SearchScratch to searches, so concurrent searches never share one and each keeps its
+// memory between searches. The mutex is held only to hand one out or take it back.
+class ScratchPool {
 public:
-    // Returns its list to the pool when destroyed (RAII), even if the search throws.
+    // Returns its scratch to the pool when destroyed (RAII), even if the search throws.
     class Lease {
     public:
-        Lease(VisitedPool& pool, std::unique_ptr<VisitedList> list) noexcept
-            : pool_(&pool), list_(std::move(list)) {}
-        ~Lease() { pool_->give_back(std::move(list_)); }
+        Lease(ScratchPool& pool, std::unique_ptr<SearchScratch> scratch) noexcept
+            : pool_(&pool), scratch_(std::move(scratch)) {}
+        ~Lease() { pool_->give_back(std::move(scratch_)); }
         Lease(const Lease&) = delete;
         Lease& operator=(const Lease&) = delete;
         Lease(Lease&&) = delete;
         Lease& operator=(Lease&&) = delete;
 
-        VisitedList& operator*() const noexcept { return *list_; }
+        SearchScratch& operator*() const noexcept { return *scratch_; }
+        SearchScratch* operator->() const noexcept { return scratch_.get(); }
 
     private:
-        VisitedPool* pool_;
-        std::unique_ptr<VisitedList> list_;
+        ScratchPool* pool_;
+        std::unique_ptr<SearchScratch> scratch_;
     };
 
     Lease acquire() {
         const std::scoped_lock lock(mutex_);
         if (free_.empty()) {
-            // Room for every list in existence, so give_back's push_back never allocates
+            // Room for every scratch in existence, so give_back's push_back never allocates
             // (and so never throws inside a destructor).
             free_.reserve(++created_);
-            return Lease(*this, std::make_unique<VisitedList>());
+            return Lease(*this, std::make_unique<SearchScratch>());
         }
-        std::unique_ptr<VisitedList> list = std::move(free_.back());
+        std::unique_ptr<SearchScratch> scratch = std::move(free_.back());
         free_.pop_back();
-        return Lease(*this, std::move(list));
+        return Lease(*this, std::move(scratch));
     }
 
 private:
-    void give_back(std::unique_ptr<VisitedList> list) noexcept {
+    void give_back(std::unique_ptr<SearchScratch> scratch) noexcept {
         const std::scoped_lock lock(mutex_);
         assert(free_.size() < free_.capacity());  // reserved in acquire(): no allocation here
-        free_.push_back(std::move(list));
+        free_.push_back(std::move(scratch));
     }
 
     std::mutex mutex_;
-    std::vector<std::unique_ptr<VisitedList>> free_;
+    std::vector<std::unique_ptr<SearchScratch>> free_;
     std::size_t created_ = 0;
 };
 

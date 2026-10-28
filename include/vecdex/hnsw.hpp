@@ -16,8 +16,8 @@
 namespace vecdex {
 
 namespace detail {
-class VisitedList;
-class VisitedPool;
+struct SearchScratch;
+class ScratchPool;
 }  // namespace detail
 
 // Build parameters (Malkov & Yashunin, "Efficient and robust approximate nearest neighbor
@@ -102,8 +102,8 @@ private:
     void connect(Id node, std::size_t layer, std::span<const Neighbor> neighbors);
     std::vector<Neighbor> select_neighbors(std::vector<Neighbor> candidates, std::size_t m) const;
     Neighbor greedy_closest(const float* query, Neighbor entry, std::size_t layer) const;
-    std::vector<Neighbor> search_layer(const float* query, Neighbor entry, std::size_t ef,
-                                       std::size_t layer, detail::VisitedList& visited) const;
+    void search_layer(const float* query, Neighbor entry, std::size_t ef, std::size_t layer,
+                      detail::SearchScratch& scratch) const;
 
     Metric metric_;
     HnswParams params_;
@@ -122,7 +122,7 @@ private:
     std::size_t max_level_ = 0;
 
     // Behind a pointer: the pool holds a mutex, which can't be moved, and the index must be.
-    std::unique_ptr<detail::VisitedPool> visited_;
+    std::unique_ptr<detail::ScratchPool> scratch_;
 };
 
 }  // namespace vecdex

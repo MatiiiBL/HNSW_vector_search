@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "search_scratch.hpp"
 #include "vector_ops.hpp"
-#include "visited.hpp"
 
 namespace vecdex {
 namespace {
@@ -44,9 +44,9 @@ HnswIndex::HnswIndex(std::size_t dim, Metric metric, HnswParams params)
       level_multiplier_(1.0 / std::log(static_cast<double>(params_.M))),
       rng_(params_.seed),
       vectors_(dim),
-      visited_(std::make_unique<detail::VisitedPool>()) {}
+      scratch_(std::make_unique<detail::ScratchPool>()) {}
 
-// Defined here, where VisitedPool is a complete type: unique_ptr's deleter needs it.
+// Defined here, where ScratchPool is a complete type: unique_ptr's deleter needs it.
 HnswIndex::~HnswIndex() = default;
 HnswIndex::HnswIndex(HnswIndex&&) noexcept = default;
 HnswIndex& HnswIndex::operator=(HnswIndex&&) noexcept = default;
@@ -144,8 +144,8 @@ void HnswIndex::add(const Matrix<float>& vectors) {
 
 // Links the already-stored node into the graph.
 void HnswIndex::insert(Id node) {
-    if (!visited_) {  // only after this index was moved from; search() relies on it existing
-        visited_ = std::make_unique<detail::VisitedPool>();
+    if (!scratch_) {  // only after this index was moved from; search() relies on it existing
+        scratch_ = std::make_unique<detail::ScratchPool>();
     }
     const std::size_t level = levels_[node];
     if (node == 0) {  // the first node is the whole graph
@@ -153,7 +153,7 @@ void HnswIndex::insert(Id node) {
         max_level_ = level;
         return;
     }
-    const detail::VisitedPool::Lease visited = visited_->acquire();
+    const detail::ScratchPool::Lease scratch = scratch_->acquire();
     const float* query = vector_of(node);
 
     // Above the new node's level, only walk greedily toward it.
@@ -169,9 +169,9 @@ void HnswIndex::insert(Id node) {
     const std::size_t top = std::min(level, max_level_);
     for (std::size_t i = 0; i <= top; ++i) {
         const std::size_t layer = top - i;
-        std::vector<Neighbor> candidates = search_layer(query, entry, ef, layer, *visited);
-        entry = *std::ranges::min_element(candidates, closer);
-        connect(node, layer, select_neighbors(std::move(candidates), params_.M));
+        search_layer(query, entry, ef, layer, *scratch);
+        entry = *std::ranges::min_element(scratch->results, closer);
+        connect(node, layer, select_neighbors(scratch->results, params_.M));
     }
 
     if (level > max_level_) {  // the new node towers over the graph: it becomes the entry
@@ -256,14 +256,16 @@ Neighbor HnswIndex::greedy_closest(const float* query, Neighbor entry, std::size
 // in front); `results` is a max-heap of the best ef found so far (worst in front). Stops when
 // the closest unexpanded candidate is farther than the worst result while results are full:
 // expanding it could only find nodes reachable through something already too far away.
-// Returns `results` as a max-heap under `closer`.
-std::vector<Neighbor> HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef,
-                                              std::size_t layer,
-                                              detail::VisitedList& visited) const {
+// Leaves `scratch.results` as a max-heap under `closer`.
+void HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef, std::size_t layer,
+                             detail::SearchScratch& scratch) const {
+    detail::VisitedList& visited = scratch.visited;
+    std::vector<Neighbor>& candidates = scratch.candidates;
+    std::vector<Neighbor>& results = scratch.results;
     visited.reset(size());
     visited.insert(entry.id);
-    std::vector<Neighbor> candidates{entry};
-    std::vector<Neighbor> results{entry};
+    candidates.assign(1, entry);  // assign keeps the capacity from earlier searches
+    results.assign(1, entry);
 
     while (!candidates.empty()) {
         std::ranges::pop_heap(candidates, farther);
@@ -289,7 +291,6 @@ std::vector<Neighbor> HnswIndex::search_layer(const float* query, Neighbor entry
             }
         }
     }
-    return results;
 }
 
 std::vector<Neighbor> HnswIndex::search(std::span<const float> query, std::size_t k,
@@ -298,20 +299,19 @@ std::vector<Neighbor> HnswIndex::search(std::span<const float> query, std::size_
     if (size() == 0) {
         return {};
     }
-    std::vector<float> scratch;
-    const float* q = detail::prepare_query(metric_, query, scratch).data();
+    std::vector<float> normalized;  // used under Cosine only
+    const float* q = detail::prepare_query(metric_, query, normalized).data();
 
     Neighbor entry{.distance = distance(q, vector_of(entry_point_)), .id = entry_point_};
     for (std::size_t layer = max_level_; layer > 0; --layer) {
         entry = greedy_closest(q, entry, layer);
     }
-    const detail::VisitedPool::Lease visited = visited_->acquire();
-    std::vector<Neighbor> found = search_layer(q, entry, std::max(ef, k), 0, *visited);
+    const detail::ScratchPool::Lease scratch = scratch_->acquire();
+    search_layer(q, entry, std::max(ef, k), 0, *scratch);
+    std::vector<Neighbor>& found = scratch->results;
     std::ranges::sort_heap(found, closer);  // closest first
-    if (found.size() > k) {
-        found.resize(k);
-    }
-    return found;
+    const auto count = static_cast<std::ptrdiff_t>(std::min(k, found.size()));
+    return {found.begin(), found.begin() + count};  // a warm L2 search allocates only this
 }
 
 // ---------------------------------------------------------------------------------------------
