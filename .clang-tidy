@@ -1,0 +1,41 @@
+# The checks vecdex code is reviewed with. Recent clang-tidy releases enable no checks without a
+# configuration, so this file is what makes `clang-tidy -p build/<preset> <file>` useful.
+#
+# Disabled on purpose:
+#   modernize-use-trailing-return-type, readability-identifier-length, the magic-number checks:
+#     style choices this codebase doesn't follow.
+#   modernize-use-nodiscard, cppcoreguidelines-pro-bounds-*: the codebase marks neither every
+#     getter [[nodiscard]] nor every operator[] bounds-checked; hot loops index with asserts.
+#   readability-function-cognitive-complexity, bugprone-easily-swappable-parameters,
+#   readability-math-missing-parentheses: noisy on numeric code, little signal.
+#   misc-include-cleaner: misreads umbrella headers such as pybind11's.
+#   portability-avoid-pragma-once, readability-trailing-comma: house style uses #pragma once and
+#     no trailing commas.
+#   *-non-private-member-variables-in-classes: plain aggregates (Neighbor, HnswParams) are
+#     intentional.
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-*,
+  -readability-function-cognitive-complexity,
+  -bugprone-easily-swappable-parameters,
+  -readability-math-missing-parentheses,
+  -misc-include-cleaner,
+  -portability-avoid-pragma-once,
+  -readability-trailing-comma,
+  -misc-non-private-member-variables-in-classes,
+  -cppcoreguidelines-non-private-member-variables-in-classes
+HeaderFilterRegex: '.*/(include/vecdex|src)/.*'
