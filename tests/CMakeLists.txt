@@ -37,3 +37,18 @@ target_compile_definitions(vecdex_tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(vecdex_tests)
+
+# A libFuzzer target for HnswIndex::load (see tests/load_fuzzer.cpp for how to build and run it).
+# The library gets coverage instrumentation too, so the fuzzer can steer by what load() does.
+# That instrumentation needs the sanitizer runtime, hence the VECDEX_SANITIZE requirement.
+if(VECDEX_BUILD_FUZZERS)
+    if(NOT VECDEX_SANITIZE)
+        message(FATAL_ERROR "VECDEX_BUILD_FUZZERS needs VECDEX_SANITIZE=ON")
+    endif()
+    target_compile_options(vecdex PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(vecdex_load_fuzzer load_fuzzer.cpp)
+    target_compile_options(vecdex_load_fuzzer PRIVATE -fsanitize=fuzzer)
+    target_link_options(vecdex_load_fuzzer PRIVATE -fsanitize=fuzzer)
+    target_include_directories(vecdex_load_fuzzer PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(vecdex_load_fuzzer PRIVATE vecdex::vecdex vecdex_warnings)
+endif()

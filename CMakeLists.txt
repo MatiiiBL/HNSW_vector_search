@@ -15,6 +15,7 @@ option(VECDEX_BUILD_BENCHMARKS "Build the benchmarks (meaningful in Release only
 # Needs Python and pybind11, which `pip install .` provides (pyproject.toml); off by default, so
 # the C++ build needs neither.
 option(VECDEX_BUILD_PYTHON "Build the Python extension module" OFF)
+option(VECDEX_BUILD_FUZZERS "Build the libFuzzer targets (Clang with libFuzzer, with VECDEX_SANITIZE)" OFF)
 
 # Sanitizers are directory-wide on purpose: every target, including GoogleTest, must be
 # instrumented, and the flags must reach the linker too. This has to run before any target
