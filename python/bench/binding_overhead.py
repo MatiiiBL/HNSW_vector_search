@@ -4,18 +4,27 @@ dataset and build parameters.
 
     python python/bench/binding_overhead.py DIR NAME [--cpp build/release/bench/vecdex_eval]
         [--M 16] [--ef-construction 200] [--k 10] [--ef 10,16,32,64,128,256,512] [--repeats 5]
+        [--threads 1] [--save FILE] [--load FILE]
 
 Reads DIR/NAME_base.fvecs, NAME_query.fvecs and NAME_groundtruth.ivecs, and times like
-vecdex_eval: one thread, one untimed warmup pass, then the median of --repeats timed passes
-over all queries. stdout gets CSV rows with vecdex_eval's columns (lib vecdex-python-batch and
+vecdex_eval: one untimed warmup pass, then the median of --repeats timed passes over all
+queries. stdout gets CSV rows with vecdex_eval's columns (lib vecdex-python-batch and
 vecdex-python-single, plus vecdex_eval's own rows with --cpp), which scripts/plot_recall_qps.py
 can plot; stderr gets a table of the overhead per query.
+
+--threads N builds with add_items(num_threads=N) and runs each batch pass as one
+knn_query(num_threads=N) call, like vecdex_eval --threads N; one query per call can't use more
+than one thread, so that mode runs only with N = 1. --save FILE writes the built index and
+--load FILE reads one instead of building, timing either on stderr as vecdex_eval does. With
+--load, vecdex_eval loads the same file, so both search the same graph even if it was built on
+several threads.
 """
 
 import argparse
 import csv
 import ctypes
 import io
+import math
 import resource
 import subprocess
 import sys
@@ -27,7 +36,8 @@ import numpy as np
 
 import vecdex
 
-COLUMNS = "lib,dataset,n,dim,M,ef_construction,build_s,memory_mb,k,ef,recall,recall_dist,qps"
+COLUMNS = ("lib,dataset,n,dim,M,ef_construction,build_s,memory_mb,k,ef,recall,recall_dist,qps,"
+           "threads")
 
 
 def read_vecs(path: Path, dtype: type) -> np.ndarray:
@@ -75,7 +85,10 @@ def run_cpp(binary: Path, args: argparse.Namespace) -> dict[int, dict[str, str]]
     """vecdex_eval's CSV rows for the same sweep, by ef. Its log goes to our stderr."""
     command = [str(binary), str(args.dir), args.name, "--M", str(args.M),
                "--ef-construction", str(args.ef_construction), "--k", str(args.k),
-               "--ef", ",".join(map(str, args.ef)), "--repeats", str(args.repeats)]
+               "--ef", ",".join(map(str, args.ef)), "--repeats", str(args.repeats),
+               "--threads", str(args.threads)]
+    if args.load:
+        command += ["--load", str(args.load)]
     print("running", " ".join(command), file=sys.stderr)
     output = subprocess.run(command, check=True, stdout=subprocess.PIPE, text=True).stdout
     return {int(row["ef"]): row for row in csv.DictReader(io.StringIO(output))}
@@ -92,7 +105,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ef", type=lambda s: [int(x) for x in s.split(",")],
                         default=[10, 16, 32, 64, 128, 256, 512])
     parser.add_argument("--repeats", type=int, default=5)
-    return parser.parse_args()
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--save", type=Path, help="write the built index to this file")
+    parser.add_argument("--load", type=Path, help="read the index from this file, not build it")
+    args = parser.parse_args()
+    if args.threads < 1:
+        parser.error("--threads must be at least 1")
+    return args
+
+
+def megabytes(path: Path) -> float:
+    return path.stat().st_size / 1e6
 
 
 def main() -> None:
@@ -112,22 +135,38 @@ def main() -> None:
           f"{sys.version.split()[0]}; {len(base)} x {base.shape[1]} base vectors, "
           f"{len(queries)} queries", file=sys.stderr)
 
-    index = vecdex.Index("l2", base.shape[1], M=args.M, ef_construction=args.ef_construction)
-    start = time.perf_counter()
-    index.add_items(base)
-    build_s = time.perf_counter() - start
+    threads = args.threads
+    if args.load:
+        start = time.perf_counter()
+        index = vecdex.Index.load(args.load)
+        print(f"loaded {args.load} ({megabytes(args.load):.0f} MB) in "
+              f"{time.perf_counter() - start:.3f} s", file=sys.stderr)
+        if index.space != "l2" or index.dim != base.shape[1]:
+            raise SystemExit(f"{args.load} is not an l2 index of dimension {base.shape[1]}")
+        build_s = math.nan
+    else:
+        index = vecdex.Index("l2", base.shape[1], M=args.M, ef_construction=args.ef_construction)
+        start = time.perf_counter()
+        index.add_items(base, num_threads=threads)
+        build_s = time.perf_counter() - start
+        print(f"built in {build_s:.1f} s on {threads} thread(s)", file=sys.stderr)
     # The base vectors plus the index: add_items reads the batch in place. ru_maxrss is in bytes
     # on macOS and in KiB on Linux.
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     peak_mb = peak / 1e6 if sys.platform == "darwin" else peak * 1024 / 1e6
-    print(f"built in {build_s:.1f} s; peak RSS {peak_mb:.0f} MB", file=sys.stderr)
+    print(f"peak RSS {peak_mb:.0f} MB", file=sys.stderr)
+    if args.save:
+        start = time.perf_counter()
+        index.save(args.save)
+        print(f"saved {args.save} ({megabytes(args.save):.0f} MB) in "
+              f"{time.perf_counter() - start:.3f} s", file=sys.stderr)
 
     print(COLUMNS)
-    shared = [args.name, len(base), base.shape[1], args.M, args.ef_construction,
+    shared = [args.name, len(base), base.shape[1], index.M, index.ef_construction,
               f"{build_s:.1f}", f"{index.memory_bytes() / 1e6:.0f}", k]
-    rows = []  # (ef, recall, batch q/s, single q/s)
+    rows = []  # (ef, recall, batch q/s, single q/s or None)
     for ef in args.ef:
-        ids, distances = index.knn_query(queries, k=k, ef=ef)
+        ids, distances = index.knn_query(queries, k=k, ef=ef, num_threads=threads)
         for i, query in enumerate(queries):
             single_ids, single_distances = index.knn_query(query, k=k, ef=ef)
             if not (np.array_equal(single_ids[0], ids[i])
@@ -137,18 +176,19 @@ def main() -> None:
 
         # Both close over this iteration's ef and run before the next one.
         def batch() -> None:
-            index.knn_query(queries, k=k, ef=ef)
+            index.knn_query(queries, k=k, ef=ef, num_threads=threads)
 
         def single() -> None:
             for query in queries:
                 index.knn_query(query, k=k, ef=ef)
 
+        modes = [("batch", batch)] + ([("single", single)] if threads == 1 else [])
         qps = {}
-        for mode, run in (("batch", batch), ("single", single)):
+        for mode, run in modes:
             qps[mode] = len(queries) / median_seconds(run, args.repeats)
             print(f"vecdex-python-{mode}", *shared, ef, f"{recall:.4f}", f"{recall_dist:.4f}",
-                  f"{qps[mode]:.0f}", sep=",", flush=True)
-        rows.append((ef, recall, qps["batch"], qps["single"]))
+                  f"{qps[mode]:.0f}", threads, sep=",", flush=True)
+        rows.append((ef, recall, qps["batch"], qps.get("single")))
 
     cpp = run_cpp(args.cpp, args) if args.cpp else {}
     for ef in args.ef:
@@ -158,13 +198,17 @@ def main() -> None:
     # Microseconds per query above C++'s: what crossing the binding costs.
     header = "\n  ef  recall   batch q/s  single q/s"
     print(header + ("    C++ q/s  batch +us/q  single +us/q" if cpp else ""), file=sys.stderr)
+    # Without --load, a build on several threads differs from vecdex_eval's own.
+    same_graph = threads == 1 or args.load is not None
     for ef, recall, batch_qps, single_qps in rows:
-        line = f"{ef:4d}  {recall:.4f}  {batch_qps:10.0f}  {single_qps:10.0f}"
+        single = f"{single_qps:10.0f}" if single_qps is not None else f"{'-':>10}"
+        line = f"{ef:4d}  {recall:.4f}  {batch_qps:10.0f}  {single}"
         if ef in cpp:
             cpp_qps = float(cpp[ef]["qps"])
-            line += (f"  {cpp_qps:9.0f}  {1e6 / batch_qps - 1e6 / cpp_qps:11.2f}"
-                     f"  {1e6 / single_qps - 1e6 / cpp_qps:12.2f}")
-            if f"{recall:.4f}" != cpp[ef]["recall"]:
+            single = (f"{1e6 / single_qps - 1e6 / cpp_qps:12.2f}" if single_qps is not None
+                      else f"{'-':>12}")
+            line += f"  {cpp_qps:9.0f}  {1e6 / batch_qps - 1e6 / cpp_qps:11.2f}  {single}"
+            if same_graph and f"{recall:.4f}" != cpp[ef]["recall"]:
                 line += "  (recall differs from C++'s: a different graph?)"
         print(line, file=sys.stderr)
 
