@@ -94,4 +94,46 @@ private:
     std::vector<T> data_;
 };
 
+// A read-only view of a rows x dim matrix stored row-major somewhere else: a Matrix, or a buffer
+// the caller owns, such as a NumPy array. It owns and copies nothing, so like a span it must not
+// outlive that buffer, and anything that reallocates the buffer invalidates it: for a Matrix,
+// append() and reserve_rows().
+//
+// Unlike a flat std::span, it carries the row width, so a function taking one can reject rows
+// of the wrong dimension instead of reading 2 x 64 values as one row of 128.
+template <typename T>
+class MatrixView {
+public:
+    // Throws std::invalid_argument if dim is 0 or data.size() is not a multiple of dim.
+    MatrixView(std::span<const T> data, std::size_t dim) : data_(data), dim_(dim) {
+        if (dim == 0) {
+            throw std::invalid_argument("MatrixView: dim must be positive");
+        }
+        if (data.size() % dim != 0) {
+            throw std::invalid_argument("MatrixView: size is not a multiple of dim");
+        }
+    }
+
+    // All of `m`. Implicit, like std::span from a std::vector: every Matrix is a valid view.
+    MatrixView(const Matrix<T>& m) noexcept  // NOLINT(*-explicit-constructor)
+        : data_(m.data()), dim_(m.dim()) {}
+
+    std::size_t rows() const noexcept { return data_.size() / dim_; }
+    std::size_t dim() const noexcept { return dim_; }
+    bool empty() const noexcept { return data_.empty(); }
+
+    // Precondition: i < rows(). Checked by assert only, like Matrix::row.
+    std::span<const T> row(std::size_t i) const noexcept {
+        assert(i < rows());
+        return data_.subspan(i * dim_, dim_);
+    }
+
+    // All elements, row after row.
+    std::span<const T> data() const noexcept { return data_; }
+
+private:
+    std::span<const T> data_;
+    std::size_t dim_;
+};
+
 }  // namespace vecdex

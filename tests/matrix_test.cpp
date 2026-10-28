@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -11,6 +12,7 @@
 namespace {
 
 using vecdex::Matrix;
+using vecdex::MatrixView;
 
 TEST(Matrix, RejectsZeroDim) {
     EXPECT_THROW((void)Matrix<float>(0), std::invalid_argument);
@@ -99,6 +101,32 @@ TEST(Matrix, MovedFromMatrixIsEmptyButKeepsDim) {
     // rows() is derived from the buffer, so the moved-from object is still consistent.
     EXPECT_EQ(a.rows(), 0U);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_EQ(a.dim(), 2U);
+}
+
+TEST(MatrixView, ViewsAMatrixWithoutCopying) {
+    Matrix<int> m(3, 2);
+    m.row(1)[1] = 7;
+    const MatrixView<int> view = m;  // implicit, like a span from a vector
+    EXPECT_EQ(view.rows(), 3U);
+    EXPECT_EQ(view.dim(), 2U);
+    EXPECT_EQ(view.data().data(), m.data().data());
+    EXPECT_EQ(view.row(1)[1], 7);
+    EXPECT_EQ(view.row(2).data(), m.row(2).data());
+}
+
+TEST(MatrixView, SplitsABufferIntoRows) {
+    const std::vector<float> buffer{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F};
+    const MatrixView<float> view(buffer, 3);
+    EXPECT_EQ(view.rows(), 2U);
+    EXPECT_FALSE(view.empty());
+    EXPECT_EQ(view.row(1)[0], 4.0F);
+    EXPECT_TRUE(MatrixView<float>(std::span<const float>(), 3).empty());
+}
+
+TEST(MatrixView, RejectsZeroDimAndPartialRows) {
+    const std::vector<float> buffer(10);
+    EXPECT_THROW((void)MatrixView<float>(buffer, 0), std::invalid_argument);
+    EXPECT_THROW((void)MatrixView<float>(buffer, 4), std::invalid_argument);  // 2.5 rows
 }
 
 }  // namespace
