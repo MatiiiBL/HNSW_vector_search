@@ -128,7 +128,9 @@ Not checked: whether the graph is good for search (its connectivity, which `insp
 
 `save` writes to a fresh temporary file next to the destination, `<path>.tmp-<16 random hex digits>`, then closes it and renames it over `<path>`. A rename within one file system is atomic, so a reader sees either the old file or the new one, never a partial one. If anything fails, the temporary file is removed and `<path>` is untouched.
 
-The temporary file is not `fsync`ed. The replacement is atomic with respect to a crash of the saving process, but after a power loss some file systems can leave the new file incomplete. The checksum then makes `load` reject it. A process killed partway through `save` can leave its temporary file behind.
+The replacement is also durable. Before the rename, `save` flushes the temporary file to stable storage; after it, it flushes the directory, so the rename itself survives a power loss. Without the first flush, a file system could persist the rename before the data, and a power loss would replace the old index with one that fails its checksum. On macOS the flushes use `fcntl(F_FULLFSYNC)`, because `fsync` there leaves the data in the drive's volatile cache; on file systems that don't support `F_FULLFSYNC` (some network file systems), `save` falls back to `fsync`. On Linux they use `fsync`. Once `save` returns, the new index survives a crash or a power loss, as far as the drive honors flush requests.
+
+If only the directory flush fails, `save` throws although `<path>` already holds the new, complete index: the old file is gone, so the rename isn't undone, but it may not survive a power loss. A process killed partway through `save` can leave its temporary file behind.
 
 ## Versioning
 

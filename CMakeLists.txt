@@ -38,6 +38,7 @@ target_compile_options(vecdex_warnings INTERFACE
 add_library(vecdex
     src/brute_force.cpp
     src/distance.cpp
+    src/file_sync.cpp
     src/hnsw.cpp
     src/hnsw_io.cpp
     src/io.cpp

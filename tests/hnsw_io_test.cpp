@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "file_sync.hpp"
 #include "test_helpers.hpp"
 #include "vecdex/hnsw.hpp"
 #include "xxhash64.hpp"
@@ -113,6 +114,25 @@ private:
     }
 
     fs::path path_;
+};
+
+// Makes `path` the working directory until it goes out of scope.
+class CurrentDirectory {
+public:
+    explicit CurrentDirectory(const fs::path& path) : previous_(fs::current_path()) {
+        fs::current_path(path);
+    }
+    ~CurrentDirectory() {
+        std::error_code ignored;
+        fs::current_path(previous_, ignored);
+    }
+    CurrentDirectory(const CurrentDirectory&) = delete;
+    CurrentDirectory& operator=(const CurrentDirectory&) = delete;
+    CurrentDirectory(CurrentDirectory&&) = delete;
+    CurrentDirectory& operator=(CurrentDirectory&&) = delete;
+
+private:
+    fs::path previous_;
 };
 
 Bytes read_file(const fs::path& path) {
@@ -663,6 +683,37 @@ TEST(HnswSaveLoad, SaveIntoAReadOnlyDirectoryThrowsAndKeepsTheOldFile) {
     fs::permissions(dir.path(), fs::perms::owner_all);
     EXPECT_EQ(read_file(path), before);
     EXPECT_EQ(dir.entries(), std::vector<std::string>{"index.vdx"});
+}
+
+// A bare file name has no parent path, so save() must flush the current directory instead.
+TEST(HnswSaveLoad, SaveToABareFileNameUsesTheCurrentDirectory) {
+    const TempDir dir;
+    const CurrentDirectory inside(dir.path());  // declared after dir: restored before it's removed
+    tiny_index().save("index.vdx");
+    EXPECT_EQ(dir.entries(), std::vector<std::string>{"index.vdx"});
+    EXPECT_EQ(HnswIndex::load("index.vdx").size(), tiny_index().size());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Flushing to stable storage (file_sync.hpp). That the bytes reach the disk can only be seen by
+// cutting the power; these check that the flushes run on real files and report their errors.
+
+TEST(FileSync, FlushesAFileAndADirectory) {
+    const TempDir dir;
+    const fs::path file = dir / "data.bin";
+    write_file(file, Bytes(100));
+    EXPECT_EQ(vecdex::detail::sync_file(file), std::error_code());
+    EXPECT_EQ(vecdex::detail::sync_directory(dir.path()), std::error_code());
+}
+
+TEST(FileSync, ReportsWhatItCannotFlush) {
+    const TempDir dir;
+    const fs::path file = dir / "data.bin";
+    write_file(file, Bytes(100));
+    EXPECT_EQ(vecdex::detail::sync_file(dir / "missing"), std::errc::no_such_file_or_directory);
+    EXPECT_EQ(vecdex::detail::sync_directory(dir / "missing"),
+              std::errc::no_such_file_or_directory);
+    EXPECT_EQ(vecdex::detail::sync_directory(file), std::errc::not_a_directory);
 }
 
 }  // namespace

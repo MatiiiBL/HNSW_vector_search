@@ -101,8 +101,11 @@ public:
 
     // Writes the index to `path` in the format of docs/FORMAT.md. Atomic: the bytes go to a new
     // temporary file in the same directory, which replaces `path` only once it is complete, so
-    // `path` never holds a partial index. On failure the temporary file is removed and `path` is
-    // untouched. Like search(), it may run alongside searches but not alongside add().
+    // `path` never holds a partial index. Durable: the file and then the rename are flushed to
+    // stable storage, so once save() returns, the new index survives a power loss. On failure
+    // the temporary file is removed and `path` is untouched, unless only the last step, flushing
+    // the directory, fails: then `path` holds the new index, which may not survive a power loss.
+    // Like search(), it may run alongside searches but not alongside add().
     // Throws std::runtime_error, naming the path, on any I/O error.
     void save(const std::filesystem::path& path) const;
 

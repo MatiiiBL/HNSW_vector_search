@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "file_sync.hpp"
 #include "search_scratch.hpp"
 #include "vecdex/hnsw.hpp"
 #include "vector_ops.hpp"
@@ -305,6 +306,12 @@ fs::path temporary_path(const fs::path& path) {
     return temp;
 }
 
+// The directory whose entry for `path` a rename to `path` changes.
+fs::path parent_directory(const fs::path& path) {
+    const fs::path parent = path.parent_path();
+    return parent.empty() ? fs::path(".") : parent;
+}
+
 // Removes a file when it goes out of scope, unless release()d. save() releases its temporary
 // file only after renaming it into place, so every failure, exceptions included, cleans it up.
 class RemoveOnExit {
@@ -372,12 +379,29 @@ void HnswIndex::save(const std::filesystem::path& path) const {
             fail(path, std::format("cannot write the temporary file {}", temp.string()));
         }
     }
-    std::error_code ec;
+    // Durable, not only atomic: the data must be on stable storage before the rename is, or a
+    // power loss could keep the rename but not the data, replacing the old index with a file
+    // that fails its checksum.
+    std::error_code ec = detail::sync_file(temp);
+    if (ec) {
+        fail(path, std::format("cannot flush the temporary file {} to storage: {}", temp.string(),
+                               ec.message()));
+    }
     fs::rename(temp, path, ec);  // atomically replaces any existing file
     if (ec) {
         fail(path, std::format("cannot replace it with {}: {}", temp.string(), ec.message()));
     }
     cleanup.release();
+
+    // Makes the rename itself survive a power loss. A failure here comes too late to undo:
+    // `path` already holds the new, complete index and the old one is gone, so it is reported,
+    // and the file is left in place.
+    const fs::path dir = parent_directory(path);
+    ec = detail::sync_directory(dir);
+    if (ec) {
+        fail(path, std::format("saved, but cannot flush the directory {} to storage: {}",
+                               dir.string(), ec.message()));
+    }
 }
 
 HnswIndex HnswIndex::load(const std::filesystem::path& path) {
