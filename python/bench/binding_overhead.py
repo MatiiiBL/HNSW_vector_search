@@ -16,6 +16,7 @@ import argparse
 import csv
 import ctypes
 import io
+import resource
 import subprocess
 import sys
 import time
@@ -115,7 +116,11 @@ def main() -> None:
     start = time.perf_counter()
     index.add_items(base)
     build_s = time.perf_counter() - start
-    print(f"built in {build_s:.1f} s", file=sys.stderr)
+    # The peak so far includes add_items' transient copy of the batch. ru_maxrss is in bytes on
+    # macOS and in KiB on Linux.
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak_mb = peak / 1e6 if sys.platform == "darwin" else peak * 1024 / 1e6
+    print(f"built in {build_s:.1f} s; peak RSS {peak_mb:.0f} MB", file=sys.stderr)
 
     print(COLUMNS)
     shared = [args.name, len(base), base.shape[1], args.M, args.ef_construction,
