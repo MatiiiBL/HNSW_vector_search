@@ -50,8 +50,8 @@ struct GraphReport {
 // top layer to find a good starting point, then explores layer 0 with a bounded best-first
 // search whose breadth, ef, trades recall for speed.
 //
-// Thread safety: search() may run concurrently from several threads, as long as no add() runs
-// at the same time. add() can link a batch of vectors on several threads itself.
+// Thread safety: search() and search_batch() may run concurrently from several threads, as long
+// as no add() runs at the same time. add() can link a batch of vectors on several threads itself.
 // Errors: like BruteForceIndex, std::invalid_argument for bad arguments, and a rejected call
 // leaves the index unchanged. If memory runs out partway through add(), the index may be left
 // half-updated and should be discarded.
@@ -82,6 +82,12 @@ public:
     // `ef` is the size of the layer-0 candidate list, the recall-versus-speed dial. Values
     // below k are raised to k.
     std::vector<Neighbor> search(std::span<const float> query, std::size_t k, std::size_t ef) const;
+
+    // search() for every row of `queries`, spread over num_threads threads (0: one per hardware
+    // thread). Element i is exactly what search() returns for row i, whatever the thread count.
+    std::vector<std::vector<Neighbor>> search_batch(const Matrix<float>& queries, std::size_t k,
+                                                    std::size_t ef,
+                                                    std::size_t num_threads = 0) const;
 
     // Checks the graph's invariants and measures its connectivity. O(n * M), for tests.
     GraphReport inspect() const;
@@ -122,6 +128,8 @@ private:
     template <Locking L>
     void search_layer(const float* query, Neighbor entry, std::size_t ef, std::size_t layer,
                       detail::SearchScratch& scratch) const;
+    std::vector<Neighbor> search_unchecked(std::span<const float> query, std::size_t k,
+                                           std::size_t ef) const;
 
     Metric metric_;
     HnswParams params_;

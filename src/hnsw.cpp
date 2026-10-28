@@ -476,6 +476,25 @@ void HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef,
 std::vector<Neighbor> HnswIndex::search(std::span<const float> query, std::size_t k,
                                         std::size_t ef) const {
     detail::check_query("HnswIndex::search", shape_of(*this), query, k);
+    return search_unchecked(query, k, ef);
+}
+
+std::vector<std::vector<Neighbor>> HnswIndex::search_batch(const Matrix<float>& queries,
+                                                           std::size_t k, std::size_t ef,
+                                                           std::size_t num_threads) const {
+    std::vector<std::vector<Neighbor>> results(queries.rows());
+    // Each query borrows its own scratch from the pool and writes only its own element of
+    // `results`, so the threads share nothing but the graph, which nobody writes meanwhile.
+    parallel_for(queries.rows(), resolve_threads(num_threads), [&](std::size_t q) {
+        detail::check_query("HnswIndex::search_batch", shape_of(*this), queries.row(q), k);
+        results[q] = search_unchecked(queries.row(q), k, ef);
+    });
+    return results;
+}
+
+// search() after the argument checks, which search_batch() runs on its worker threads.
+std::vector<Neighbor> HnswIndex::search_unchecked(std::span<const float> query, std::size_t k,
+                                                  std::size_t ef) const {
     if (size() == 0) {
         return {};
     }
