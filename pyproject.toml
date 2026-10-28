@@ -8,6 +8,7 @@ build-backend = "scikit_build_core.build"
 name = "vecdex"
 version = "0.1.0"  # must match project(VERSION) in CMakeLists.txt; the build checks
 description = "Approximate nearest-neighbor vector search (HNSW) in C++20, with NumPy bindings"
+readme = "python/README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "MatiiiBL" }]
