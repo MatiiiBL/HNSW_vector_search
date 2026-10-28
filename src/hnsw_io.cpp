@@ -13,6 +13,7 @@
 #include <ios>
 #include <istream>
 #include <limits>
+#include <memory>
 #include <ostream>
 #include <random>
 #include <span>
@@ -390,10 +391,11 @@ HnswIndex HnswIndex::load(const std::filesystem::path& path) {
     }
     // A large stream buffer: with its default 4 KB one, libc++'s filebuf made reading the file
     // 2-8 times slower than fread (measured on 65 MB, 2026-10-27). Implementation-defined, so at
-    // worst ignored. Declared first, because it must outlive the stream.
-    std::vector<char> stream_buffer(kChunkBytes);
+    // worst ignored. Left uninitialized, as the stream only reads what it has filled in; zeroing
+    // a megabyte per load is slow in unoptimized builds. Declared first: it must outlive `in`.
+    const auto stream_buffer = std::make_unique_for_overwrite<char[]>(kChunkBytes);
     std::ifstream in;
-    in.rdbuf()->pubsetbuf(stream_buffer.data(), static_cast<std::streamsize>(stream_buffer.size()));
+    in.rdbuf()->pubsetbuf(stream_buffer.get(), static_cast<std::streamsize>(kChunkBytes));
     in.open(path, std::ios::binary);
     if (!in) {
         fail(path, "cannot open file");
