@@ -1,16 +1,38 @@
 #include "vecdex/hnsw.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <exception>
 #include <format>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "search_scratch.hpp"
 #include "vector_ops.hpp"
 
 namespace vecdex {
+
+namespace detail {
+
+// The mutexes of a parallel add(). The lock order rules out deadlock: a thread takes `entry` (if
+// at all) before any node lock, holds at most one node lock at a time, and takes no other lock
+// of the index while holding it. So the owner of a node lock never waits for one, a thread waiting
+// for `entry` holds none, and no cycle of threads waiting on each other can form.
+struct BuildLocks {
+    explicit BuildLocks(std::size_t nodes) : links(std::make_unique<std::mutex[]>(nodes)) {}
+
+    // One per node, guarding its link lists on every layer. A fixed-size array: mutexes can't
+    // be moved, so a std::vector of them couldn't grow anyway.
+    std::unique_ptr<std::mutex[]> links;
+    std::mutex entry;  // guards entry_point_ and max_level_
+};
+
+}  // namespace detail
+
 namespace {
 
 detail::IndexShape shape_of(const HnswIndex& index) {
@@ -43,6 +65,63 @@ void prefetch(const void* p, std::size_t bytes) noexcept {
     }
 }
 
+// num_threads as given, with 0 meaning one per hardware thread. hardware_concurrency() returns
+// 0 when it can't tell.
+std::size_t resolve_threads(std::size_t num_threads) noexcept {
+    return num_threads != 0 ? num_threads : std::max(1U, std::thread::hardware_concurrency());
+}
+
+// Calls fn(i) for every i in [0, count) on up to `threads` threads, the calling thread among
+// them. Each thread claims the next unclaimed i from a shared counter, so a thread on a slower
+// (efficiency) core simply claims fewer; with a fixed split, everyone would wait for the slowest
+// share. If fn throws, the remaining items are skipped and the first exception is rethrown here
+// after every thread has stopped: escaping a std::thread, it would call std::terminate.
+template <typename Fn>
+void parallel_for(std::size_t count, std::size_t threads, const Fn& fn) {
+    assert(threads >= 1);
+    if (count == 0) {
+        return;
+    }
+    threads = std::min(threads, count);
+    // Relaxed is enough: the counter only hands out distinct items. Whatever fn reads was
+    // written before the threads started, or is guarded by a lock of its own.
+    std::atomic<std::size_t> next{0};
+    std::exception_ptr error;
+    std::mutex error_mutex;
+    const auto work = [&] {
+        try {
+            for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed); i < count;
+                 i = next.fetch_add(1, std::memory_order_relaxed)) {
+                fn(i);
+            }
+        } catch (...) {
+            next.store(count, std::memory_order_relaxed);  // everyone stops at their next claim
+            const std::scoped_lock lock(error_mutex);
+            if (!error) {
+                error = std::current_exception();
+            }
+        }
+    };
+    std::vector<std::thread> helpers;
+    helpers.reserve(threads - 1);
+    for (std::size_t t = 1; t < threads; ++t) {
+        try {
+            helpers.emplace_back(work);
+        } catch (...) {
+            // The system won't start another thread (std::system_error). The threads already
+            // running, this one included, still claim every item: the work gets done, slower.
+            break;
+        }
+    }
+    work();
+    for (std::thread& helper : helpers) {
+        helper.join();
+    }
+    if (error) {
+        std::rethrow_exception(error);
+    }
+}
+
 }  // namespace
 
 HnswIndex::HnswIndex(std::size_t dim, Metric metric, HnswParams params)
@@ -56,7 +135,8 @@ HnswIndex::HnswIndex(std::size_t dim, Metric metric, HnswParams params)
       vectors_(dim),
       scratch_(std::make_unique<detail::ScratchPool>()) {}
 
-// Defined here, where ScratchPool is a complete type: unique_ptr's deleter needs it.
+// Defined here, where ScratchPool and BuildLocks are complete types: unique_ptr's deleter needs
+// them.
 HnswIndex::~HnswIndex() = default;
 HnswIndex::HnswIndex(HnswIndex&&) noexcept = default;
 HnswIndex& HnswIndex::operator=(HnswIndex&&) noexcept = default;
@@ -90,6 +170,31 @@ void HnswIndex::set_links(Id node, std::size_t layer,
     }
 }
 
+// While a parallel add() runs, a node's links are read or written only under its lock.
+// Otherwise this returns a lock that owns no mutex, which compiles to nothing.
+template <HnswIndex::Locking L>
+std::unique_lock<std::mutex> HnswIndex::lock_links(Id node) const {
+    if constexpr (L == Locking::PerNode) {
+        return std::unique_lock(build_locks_->links[node]);
+    } else {
+        return {};
+    }
+}
+
+// `node`'s links on `layer`. In a parallel add() another thread may rewrite them at any moment,
+// so they are copied into `copy` under the node's lock, and the caller reads the copy.
+template <HnswIndex::Locking L>
+std::span<const Id> HnswIndex::read_links(Id node, std::size_t layer, std::vector<Id>& copy) const {
+    if constexpr (L == Locking::PerNode) {
+        const std::unique_lock<std::mutex> lock = lock_links<L>(node);
+        const std::span<const Id> ids = links(node, layer);
+        copy.assign(ids.begin(), ids.end());
+        return copy;
+    } else {
+        return links(node, layer);
+    }
+}
+
 float HnswIndex::distance(const float* a, const float* b) const noexcept {
     const float raw = kernel_(a, b, dim());
     return one_minus_ ? 1.0F - raw : raw;
@@ -119,8 +224,12 @@ std::size_t HnswIndex::random_level() {
 }
 
 // Appends one validated vector and empty link blocks for it; its id is size() - 1. Storage
-// only grows here, never during insert(), so pointers into the link blocks stay valid there.
+// only grows here, never during insert(), so pointers into the link blocks stay valid there,
+// even while several threads insert.
 void HnswIndex::store(std::span<const float> vector) {
+    if (!scratch_) {  // only after this index was moved from; search() relies on it existing
+        scratch_ = std::make_unique<detail::ScratchPool>();
+    }
     vectors_.append(vector);
     if (metric_ == Metric::Cosine) {
         detail::normalize(vectors_.row(size() - 1));
@@ -135,67 +244,116 @@ Id HnswIndex::add(std::span<const float> vector) {
     detail::check_new_vectors("HnswIndex::add", shape_of(*this), vector.size(), vector);
     store(vector);
     const auto id = static_cast<Id>(size() - 1);
-    insert(id);
+    insert<Locking::None>(id);
     return id;
 }
 
-void HnswIndex::add(const Matrix<float>& vectors) {
+void HnswIndex::add(const Matrix<float>& vectors, std::size_t num_threads) {
     detail::check_new_vectors("HnswIndex::add", shape_of(*this), vectors.dim(), vectors.data());
-    const std::size_t total = size() + vectors.rows();
+    const std::size_t first = size();
+    const std::size_t total = first + vectors.rows();
     vectors_.reserve_rows(total);
     levels_.reserve(total);
     layer0_.reserve(total * (1 + max_links(0)));
     upper_.reserve(total);
+    const std::size_t threads = std::min(resolve_threads(num_threads), vectors.rows());
+    if (threads <= 1) {
+        for (std::size_t r = 0; r < vectors.rows(); ++r) {
+            store(vectors.row(r));
+            insert<Locking::None>(static_cast<Id>(size() - 1));
+        }
+        return;
+    }
+
+    // Store every vector before linking any, so no container grows while threads hold pointers
+    // into it. The levels are drawn in the same order as in a serial build.
+    build_locks_ = std::make_unique<detail::BuildLocks>(total);
     for (std::size_t r = 0; r < vectors.rows(); ++r) {
         store(vectors.row(r));
-        insert(static_cast<Id>(size() - 1));
     }
+    std::size_t next = first;
+    if (next == 0) {  // the first node founds the graph; every other insert starts from it
+        insert<Locking::None>(0);
+        next = 1;
+    }
+    parallel_for(total - next, threads, [this, next](std::size_t i) {
+        insert<Locking::PerNode>(static_cast<Id>(next + i));
+    });
+    build_locks_.reset();  // searches never lock, and a std::mutex is 40 to 64 bytes per node
 }
 
-// Links the already-stored node into the graph.
+// Links the already-stored node into the graph. With Locking::PerNode, other threads insert
+// other nodes at the same time.
+template <HnswIndex::Locking L>
 void HnswIndex::insert(Id node) {
-    if (!scratch_) {  // only after this index was moved from; search() relies on it existing
-        scratch_ = std::make_unique<detail::ScratchPool>();
-    }
     const std::size_t level = levels_[node];
     if (node == 0) {  // the first node is the whole graph
         entry_point_ = node;
         max_level_ = level;
         return;
     }
+    // A node that will raise the top layer keeps the entry lock until it is linked, so two such
+    // nodes take turns and the second one links to the first on the new layers, as in hnswlib.
+    // Each such insert raises max_level_, so this happens only a few times per build.
+    std::unique_lock<std::mutex> entry_lock;
+    if constexpr (L == Locking::PerNode) {
+        entry_lock = std::unique_lock(build_locks_->entry);
+    }
+    const Id entry_point = entry_point_;
+    const std::size_t max_level = max_level_;
+    if (entry_lock.owns_lock() && level <= max_level) {
+        entry_lock.unlock();
+    }
     const detail::ScratchPool::Lease scratch = scratch_->acquire();
     const float* query = vector_of(node);
 
     // Above the new node's level, only walk greedily toward it.
-    Neighbor entry{.distance = distance(query, vector_of(entry_point_)), .id = entry_point_};
-    for (std::size_t layer = max_level_; layer > level; --layer) {
-        entry = greedy_closest(query, entry, layer);
+    Neighbor entry{.distance = distance(query, vector_of(entry_point)), .id = entry_point};
+    for (std::size_t layer = max_level; layer > level; --layer) {
+        entry = greedy_closest<L>(query, entry, layer, *scratch);
     }
 
-    // On every layer the node lives on, top-down: collect ef_construction candidates, link to
-    // the best M of them, and start the next layer down from the closest one found. Fewer than
-    // M candidates would leave the node under-linked, so ef is at least M (as in hnswlib).
+    // On every layer the node lives on, top-down: collect ef_construction candidates, choose the
+    // best M of them, and start the next layer down from the closest one found. Fewer than M
+    // candidates would leave the node under-linked, so ef is at least M (as in hnswlib).
     const std::size_t ef = std::max(params_.ef_construction, params_.M);
-    const std::size_t top = std::min(level, max_level_);
+    const std::size_t top = std::min(level, max_level);
+    std::vector<std::vector<Neighbor>> chosen(top + 1);
     for (std::size_t i = 0; i <= top; ++i) {
         const std::size_t layer = top - i;
-        search_layer(query, entry, ef, layer, *scratch);
+        search_layer<L>(query, entry, ef, layer, *scratch);
         entry = *std::ranges::min_element(scratch->results, closer);
-        connect(node, layer, select_neighbors(scratch->results, params_.M));
+        chosen[layer] = select_neighbors(scratch->results, params_.M);
     }
 
-    if (level > max_level_) {  // the new node towers over the graph: it becomes the entry
+    // Link only now: first the node's own lists, then the links back to it. Other threads can
+    // reach the node only through a link back, so before the first one exists none can find it.
+    // So no thread links to it while its own lists are unset (set_links would overwrite that
+    // link), and its own searches above could not return the node itself. Serially the order
+    // changes nothing: each layer's links are independent of the others.
+    {
+        const std::unique_lock<std::mutex> lock = lock_links<L>(node);
+        for (std::size_t layer = 0; layer <= top; ++layer) {
+            set_links(node, layer, chosen[layer]);
+        }
+    }
+    for (std::size_t layer = 0; layer <= top; ++layer) {
+        link_back<L>(node, layer, chosen[layer]);
+    }
+
+    if (level > max_level) {  // the new node towers over the graph: it becomes the entry
         max_level_ = level;
         entry_point_ = node;
     }
 }
 
-// Links `node` to `neighbors` on `layer`, and each neighbor back to `node`. A neighbor whose
-// list is already full re-selects its links from the old ones plus `node`, which keeps every
-// degree bounded by max_links(layer).
-void HnswIndex::connect(Id node, std::size_t layer, std::span<const Neighbor> neighbors) {
-    set_links(node, layer, neighbors);
+// Links each of `neighbors` back to `node` on `layer`. A neighbor whose list is already full
+// re-selects its links from the old ones plus `node`, which keeps every degree bounded by
+// max_links(layer). The neighbor's lock is held for the whole read-modify-write.
+template <HnswIndex::Locking L>
+void HnswIndex::link_back(Id node, std::size_t layer, std::span<const Neighbor> neighbors) {
     for (const Neighbor& neighbor : neighbors) {
+        const std::unique_lock<std::mutex> lock = lock_links<L>(neighbor.id);
         Id* block = link_block(neighbor.id, layer);
         const std::size_t count = block[0];
         if (count < max_links(layer)) {
@@ -247,11 +405,13 @@ std::vector<Neighbor> HnswIndex::select_neighbors(std::vector<Neighbor> candidat
 
 // Moves from `entry` to whichever neighbor on `layer` is closer to the query, until none is.
 // Used on the sparse upper layers, where one good starting point is all we need.
-Neighbor HnswIndex::greedy_closest(const float* query, Neighbor entry, std::size_t layer) const {
+template <HnswIndex::Locking L>
+Neighbor HnswIndex::greedy_closest(const float* query, Neighbor entry, std::size_t layer,
+                                   detail::SearchScratch& scratch) const {
     for (bool moved = true; moved;) {
         moved = false;
         const Id current = entry.id;
-        for (const Id id : links(current, layer)) {
+        for (const Id id : read_links<L>(current, layer, scratch.link_copy)) {
             const float d = distance(query, vector_of(id));
             if (d < entry.distance) {
                 entry = {.distance = d, .id = id};
@@ -267,6 +427,7 @@ Neighbor HnswIndex::greedy_closest(const float* query, Neighbor entry, std::size
 // the closest unexpanded candidate is farther than the worst result while results are full:
 // expanding it could only find nodes reachable through something already too far away.
 // Leaves `scratch.results` as a max-heap under `closer`.
+template <HnswIndex::Locking L>
 void HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef, std::size_t layer,
                              detail::SearchScratch& scratch) const {
     detail::VisitedList& visited = scratch.visited;
@@ -290,7 +451,7 @@ void HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef,
         // likely a cache miss (a random 512 bytes out of SIFT1M's 512 MB); issued together, the
         // misses overlap instead of each distance waiting for its own.
         fresh.clear();
-        for (const Id id : links(current.id, layer)) {
+        for (const Id id : read_links<L>(current.id, layer, scratch.link_copy)) {
             if (visited.insert(id)) {
                 fresh.push_back(id);
                 prefetch(vector_of(id), vector_bytes);
@@ -321,12 +482,12 @@ std::vector<Neighbor> HnswIndex::search(std::span<const float> query, std::size_
     std::vector<float> normalized;  // used under Cosine only
     const float* q = detail::prepare_query(metric_, query, normalized).data();
 
+    const detail::ScratchPool::Lease scratch = scratch_->acquire();
     Neighbor entry{.distance = distance(q, vector_of(entry_point_)), .id = entry_point_};
     for (std::size_t layer = max_level_; layer > 0; --layer) {
-        entry = greedy_closest(q, entry, layer);
+        entry = greedy_closest<Locking::None>(q, entry, layer, *scratch);
     }
-    const detail::ScratchPool::Lease scratch = scratch_->acquire();
-    search_layer(q, entry, std::max(ef, k), 0, *scratch);
+    search_layer<Locking::None>(q, entry, std::max(ef, k), 0, *scratch);
     std::vector<Neighbor>& found = scratch->results;
     std::ranges::sort_heap(found, closer);  // closest first
     const auto count = static_cast<std::ptrdiff_t>(std::min(k, found.size()));

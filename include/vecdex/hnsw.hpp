@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <span>
 #include <string>
@@ -18,6 +19,7 @@ namespace vecdex {
 namespace detail {
 struct SearchScratch;
 class ScratchPool;
+struct BuildLocks;
 }  // namespace detail
 
 // Build parameters (Malkov & Yashunin, "Efficient and robust approximate nearest neighbor
@@ -49,7 +51,7 @@ struct GraphReport {
 // search whose breadth, ef, trades recall for speed.
 //
 // Thread safety: search() may run concurrently from several threads, as long as no add() runs
-// at the same time.
+// at the same time. add() can link a batch of vectors on several threads itself.
 // Errors: like BruteForceIndex, std::invalid_argument for bad arguments, and a rejected call
 // leaves the index unchanged. If memory runs out partway through add(), the index may be left
 // half-updated and should be discarded.
@@ -71,7 +73,10 @@ public:
     // Stores and links one vector; returns its id.
     Id add(std::span<const float> vector);
     // Stores and links every row of `vectors`; they get consecutive ids starting at size().
-    void add(const Matrix<float>& vectors);
+    // num_threads > 1 links them in parallel, and 0 means one thread per hardware thread. A
+    // parallel build is as good but not reproducible, because the graph depends on how the
+    // threads interleave; with one thread the graph is the same as adding the rows one by one.
+    void add(const Matrix<float>& vectors, std::size_t num_threads = 1);
 
     // Up to k approximate nearest neighbors of `query`, closest first, ties by smaller id.
     // `ef` is the size of the layer-0 candidate list, the recall-versus-speed dial. Values
@@ -85,6 +90,10 @@ public:
     std::size_t memory_bytes() const noexcept;
 
 private:
+    // Whether a graph walk locks each node's links. Only the inserts of a parallel add() do;
+    // search() never overlaps add(), so it walks the graph without any synchronization.
+    enum class Locking { None, PerNode };
+
     std::size_t max_links(std::size_t layer) const noexcept {
         return layer == 0 ? 2 * params_.M : params_.M;
     }
@@ -92,16 +101,25 @@ private:
     Id* link_block(Id node, std::size_t layer) noexcept;
     std::span<const Id> links(Id node, std::size_t layer) const noexcept;
     void set_links(Id node, std::size_t layer, std::span<const Neighbor> neighbors) noexcept;
+    template <Locking L>
+    std::unique_lock<std::mutex> lock_links(Id node) const;
+    template <Locking L>
+    std::span<const Id> read_links(Id node, std::size_t layer, std::vector<Id>& copy) const;
 
     float distance(const float* a, const float* b) const noexcept;
     const float* vector_of(Id node) const noexcept { return vectors_.row(node).data(); }
 
     std::size_t random_level();
     void store(std::span<const float> vector);
+    template <Locking L>
     void insert(Id node);
-    void connect(Id node, std::size_t layer, std::span<const Neighbor> neighbors);
+    template <Locking L>
+    void link_back(Id node, std::size_t layer, std::span<const Neighbor> neighbors);
     std::vector<Neighbor> select_neighbors(std::vector<Neighbor> candidates, std::size_t m) const;
-    Neighbor greedy_closest(const float* query, Neighbor entry, std::size_t layer) const;
+    template <Locking L>
+    Neighbor greedy_closest(const float* query, Neighbor entry, std::size_t layer,
+                            detail::SearchScratch& scratch) const;
+    template <Locking L>
     void search_layer(const float* query, Neighbor entry, std::size_t ef, std::size_t layer,
                       detail::SearchScratch& scratch) const;
 
@@ -123,6 +141,8 @@ private:
 
     // Behind a pointer: the pool holds a mutex, which can't be moved, and the index must be.
     std::unique_ptr<detail::ScratchPool> scratch_;
+    // The mutexes of a parallel add(), alive only while it runs.
+    std::unique_ptr<detail::BuildLocks> build_locks_;
 };
 
 }  // namespace vecdex
