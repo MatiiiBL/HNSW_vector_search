@@ -12,6 +12,9 @@ option(VECDEX_BUILD_TESTS "Build the vecdex test suite" ${PROJECT_IS_TOP_LEVEL})
 option(VECDEX_SANITIZE "Instrument everything with AddressSanitizer + UBSan" OFF)
 option(VECDEX_WARNINGS_AS_ERRORS "Treat compiler warnings in vecdex code as errors" ON)
 option(VECDEX_BUILD_BENCHMARKS "Build the benchmarks (meaningful in Release only)" OFF)
+# Needs Python and pybind11, which `pip install .` provides (pyproject.toml); off by default, so
+# the C++ build needs neither.
+option(VECDEX_BUILD_PYTHON "Build the Python extension module" OFF)
 
 # Sanitizers are directory-wide on purpose: every target, including GoogleTest, must be
 # instrumented, and the flags must reach the linker too. This has to run before any target
@@ -68,4 +71,8 @@ endif()
 
 if(VECDEX_BUILD_BENCHMARKS)
     add_subdirectory(bench)
+endif()
+
+if(VECDEX_BUILD_PYTHON)
+    add_subdirectory(python)
 endif()

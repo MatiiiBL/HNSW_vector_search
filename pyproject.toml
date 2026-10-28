@@ -1,0 +1,44 @@
+[build-system]
+# pybind11 is pinned exactly: its headers are compiled into the extension, like the
+# version-and-hash pins on the C++ dependencies. scikit-build-core only drives the build.
+requires = ["scikit-build-core>=1.0", "pybind11==3.1.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vecdex"
+version = "0.1.0"  # must match project(VERSION) in CMakeLists.txt; the build checks
+description = "Approximate nearest-neighbor vector search (HNSW) in C++20, with NumPy bindings"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "MatiiiBL" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+classifiers = [
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Repository = "https://github.com/MatiiiBL/HNSW_vector_search"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+wheel.packages = ["python/vecdex"]
+
+[tool.scikit-build.cmake.define]
+VECDEX_BUILD_PYTHON = "ON"
+VECDEX_BUILD_TESTS = "OFF"  # GoogleTest would be downloaded for nothing
+# A newer compiler's new warning shouldn't break `pip install` for users. CI turns this back on
+# with --config-settings=cmake.define.VECDEX_WARNINGS_AS_ERRORS=ON.
+VECDEX_WARNINGS_AS_ERRORS = "OFF"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["python/tests"]
+# importlib mode never puts python/ on sys.path, where the source tree's vecdex/ (which has no
+# compiled _core) would shadow the installed package.
+addopts = ["--import-mode=importlib", "-ra"]
