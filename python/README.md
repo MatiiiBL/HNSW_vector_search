@@ -47,7 +47,7 @@ index = vecdex.Index.load("vectors.vdx")                # space, dim, M, ... fro
 - **Input is float32, C-contiguous and aligned,** shaped `(n, dim)`, or `(dim,)` for one
   vector. It is read in place through the buffer protocol (NumPy arrays and their contiguous
   views, `memoryview`, ...), with no copy: `add_items` needs no memory beyond what the index
-  itself grows by.
+  itself grows by. [Thread safety](#thread-safety) says what that asks of other threads.
 - **Nothing is converted silently.** Any other dtype, float64 included, raises `TypeError`; a
   non-contiguous or unaligned array raises `ValueError`. The error names the one-line fix
   (`data.astype(np.float32)`, `np.ascontiguousarray(data)`), so a copy only happens where you
@@ -65,16 +65,24 @@ index = vecdex.Index.load("vectors.vdx")                # space, dim, M, ... fro
 
 ## Threads
 
-- **One call on several threads:** `num_threads` spreads `add_items` or `knn_query` over that
-  many threads; `0` means one per hardware thread. It is keyword-only, and 1 by default, so a
-  call only takes more cores when asked to.
-  - `knn_query` returns the same results for any `num_threads`.
-  - `add_items` with `num_threads=1` builds the same graph as adding the vectors one at a time,
-    on every run (with the same `seed`). More threads build an equally good graph faster, but it
-    depends on how the threads interleave, so it can differ from run to run.
-- **Several Python threads on one index:** `add_items`, `knn_query`, `save` and `load` release
-  the GIL. Queries and saves from several threads run in parallel; an `add_items` waits for them
-  and runs alone. Don't modify an array while a call that reads it is running.
+`num_threads` spreads one `add_items` or `knn_query` call over that many threads; `0` means one
+per hardware thread. It is keyword-only, and 1 by default, so a call only takes more cores when
+asked to.
+
+- `knn_query` returns the same results for any `num_threads`.
+- `add_items` with `num_threads=1` builds the same graph as adding the vectors one at a time, on
+  every run (with the same `seed`). More threads build an equally good graph faster, but it
+  depends on how the threads interleave, so it can differ from run to run.
+
+## Thread safety
+
+- **An index may be shared between Python threads.** `add_items`, `knn_query`, `save` and `load`
+  release the GIL. Queries and saves from several threads run in parallel; an `add_items` waits
+  for them and runs alone.
+- **Your arrays are not protected: `data` must not be modified by another thread while
+  `add_items` or `knn_query` runs.** It is read in place, after validation, so a value written
+  after the check (a NaN, say) reaches the index unchecked, and the behavior is undefined. If
+  another thread might write to the array, pass a copy: `index.add_items(data.copy())`.
 
 ## Saving and loading
 

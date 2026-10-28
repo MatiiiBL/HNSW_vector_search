@@ -129,6 +129,13 @@ std::string item_type(const py::buffer& data, const py::buffer_info& info) {
 //
 // While a Rows exists it holds the buffer, which keeps the memory alive and in place, so the
 // rows may be read with the GIL released. Create and destroy it with the GIL held.
+//
+// Holding the buffer doesn't stop another thread from writing to it, and the core reads the
+// rows first to validate them, then again to store or search them. A NaN written in between
+// would reach sorts and heaps that need finite distances, which is undefined behavior. A
+// private copy would close that gap at the cost of a second batch in memory, so instead the
+// docstrings make it the caller's contract not to modify data during a call: the contract
+// hnswlib and FAISS rely on too.
 class Rows {
 public:
     Rows(const py::buffer& data, std::size_t dim, std::string_view method)
@@ -329,7 +336,9 @@ PYBIND11_MODULE(_core, m) {
         Input arrays must already be float32 and C-contiguous: they are read in place, and
         nothing is converted silently. Several threads may use one index: searches and saves
         run in parallel with each other, and add_items runs alone. All of them release the GIL.
-        add_items and knn_query can also spread one call over several threads (num_threads).
+        The index protects itself, but not the input arrays: no other thread may modify an
+        array while a call reads it. add_items and knn_query can also spread one call over
+        several threads (num_threads).
     )doc")
         .def(py::init<std::string_view, std::int64_t, std::int64_t, std::int64_t, std::uint64_t>(),
              py::arg("space"), py::arg("dim"), py::arg("M") = defaults.M,
@@ -340,7 +349,9 @@ PYBIND11_MODULE(_core, m) {
 
             Args:
                 data: a float32, C-contiguous array of shape (n, dim), or (dim,) for one vector.
-                    It is read in place, not copied.
+                    It must not be modified by another thread while the call runs: it is read
+                    in place, after validation, so a value changed after the check would reach
+                    the index unchecked. Pass data.copy() if another thread might write to it.
                 num_threads: threads that link the batch into the graph; 0 means one per
                     hardware thread. With 1, the default, the graph is the one adding the
                     vectors one at a time builds, the same on every run. More threads build an
@@ -357,7 +368,9 @@ PYBIND11_MODULE(_core, m) {
             Finds the k approximate nearest neighbors of each query.
 
             Args:
-                data: queries, under the same rules as add_items' data.
+                data: queries, under the same rules as add_items' data: read in place, after
+                    validation, so they must not be modified by another thread while the call
+                    runs.
                 k: neighbors per query.
                 ef: the search breadth, the recall-versus-speed dial; None uses self.ef.
                     Values below k act as k.
