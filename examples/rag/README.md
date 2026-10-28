@@ -27,14 +27,17 @@ demo doesn't need one.
 retriever     recall@10 vs exact   right passage at #1   in top 10
 faiss-flat                1.0000                0.6229      0.9167
 faiss-hnsw                0.9985                0.6226      0.9156
-vecdex      skipped: VecdexRetriever needs the vecdex Python bindings, which aren't installed ...
+vecdex                    0.9980                0.6224      0.9149
 ```
 
 - **recall@10 vs exact:** the share of exact search's top 10 that an approximate retriever also
   returns, averaged over all 10,570 questions. This checks the index, not the embeddings.
 - **right passage at #1 / in top 10:** how often the passage a question was written about comes
   back first, or at all. This measures the whole retrieval pipeline (mostly the embedding model).
-  Approximate search barely moves it: 62.26% at #1 with HNSW against 62.29% with exact search.
+  Approximate search barely moves it: 62.24% at #1 with vecdex and 62.26% with FAISS's HNSW,
+  against 62.29% with exact search.
+
+Without the vecdex bindings, its row reads `skipped:` and says how to install them.
 
 It then prints a few questions with their top 3 passages. They include failures: SQuAD questions
 such as "how many permanent objects are located there?" only make sense next to their paragraph.
@@ -70,9 +73,9 @@ such as "how many permanent objects are located there?" only make sense next to 
 `vecdex.Index(space="cosine", dim=384, M=16, ef_construction=200)`, `add_items(array) -> ids`,
 `knn_query(queries, k=10, ef=64) -> (ids, distances)`, with cosine distance = 1 − cos. Until the
 bindings are installed, constructing it raises an `ImportError` that says so, and the demo runs
-the FAISS retrievers only. Once the repository has a `pyproject.toml`, `run.sh` installs the
-bindings into the venv. After changing the C++ code, refresh them with
-`examples/rag/.venv/bin/pip install .`
+the FAISS retrievers only. When the repository has the Python package (`pyproject.toml`),
+`run.sh` builds the bindings and installs them into the venv on its first run. After changing
+the C++ code, refresh them with `examples/rag/.venv/bin/pip install .`
 
 ## Corpus
 
