@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(vecdex_tests
     brute_force_test.cpp
     distance_test.cpp
+    hnsw_parallel_test.cpp
     hnsw_test.cpp
     io_test.cpp
     kernels_test.cpp
