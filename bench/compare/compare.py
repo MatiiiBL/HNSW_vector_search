@@ -50,8 +50,8 @@ class Engine(ABC):
         """Ids of up to k neighbors per query, closest first, as a (queries, k) array."""
 
     @abstractmethod
-    def memory_bytes(self) -> int | None:
-        """Size of the built index, or None if the library can't report it."""
+    def memory_bytes(self) -> int:
+        """Size of the built index: its vectors and links."""
 
 
 # Each engine imports its library in __init__, so a missing library skips only its own sweep.
@@ -126,10 +126,8 @@ class Vecdex(Engine):
         ids, _ = self._index.knn_query(queries, k=k, ef=ef)
         return ids
 
-    def memory_bytes(self) -> int | None:
-        # HnswIndex::memory_bytes() exists in C++; the bindings may not expose it.
-        report = getattr(self._index, "memory_bytes", None)
-        return None if report is None else int(report())
+    def memory_bytes(self) -> int:
+        return self._index.memory_bytes()
 
 
 ENGINES = {"faiss-hnsw": FaissHnsw, "hnswlib": Hnswlib, "vecdex": Vecdex}
@@ -289,9 +287,8 @@ def sweep(lib: str, engine: Engine, data: Dataset, args: argparse.Namespace) -> 
     start = time.perf_counter()
     engine.build(base)
     build_s = time.perf_counter() - start
-    memory = engine.memory_bytes()
-    memory_mb = "nan" if memory is None else f"{memory / 1e6:.0f}"
-    log(f"{lib}: built in {build_s:.1f} s, index {memory_mb} MB")
+    memory_mb = engine.memory_bytes() / 1e6
+    log(f"{lib}: built in {build_s:.1f} s, index {memory_mb:.0f} MB")
 
     # The k-th true neighbor's distance, recomputed from the vectors like every found distance
     # below: the libraries report distances in different units (squared L2, similarity, 1 - ip).
@@ -311,7 +308,7 @@ def sweep(lib: str, engine: Engine, data: Dataset, args: argparse.Namespace) -> 
         recall_dist = threshold_recall(distances(queries, base, found, args.metric), kth_distance)
         row = (
             f"{lib},{args.name},{len(base)},{base.shape[1]},{args.M},{args.ef_construction},"
-            f"{build_s:.1f},{memory_mb},{args.k},{ef},{recall:.4f},{recall_dist:.4f},{qps:.0f}"
+            f"{build_s:.1f},{memory_mb:.0f},{args.k},{ef},{recall:.4f},{recall_dist:.4f},{qps:.0f}"
         )
         print(row, flush=True)
         rows.append(row)

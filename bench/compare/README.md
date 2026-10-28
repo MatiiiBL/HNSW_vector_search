@@ -43,7 +43,7 @@ also go to stdout and the progress to stderr.
 - **Same parameters everywhere:** M=16 (2M links on layer 0), efConstruction=200, and the same
   efSearch list. hnswlib gets seed 42, vecdex's default. FAISS has no seed parameter.
 - **One thread, batched queries:** `faiss.omp_set_num_threads(1)`, and `num_threads=1` for
-  hnswlib's build and search. vecdex's bindings run on the calling thread. Each timed pass is
+  hnswlib's build and search. vecdex's `add_items` and `knn_query` run on the calling thread. Each timed pass is
   one call over all queries, so Python's per-call overhead is spread across 10,000 queries
   equally for every library. QPS is the median of 5 passes after one untimed warmup pass.
   Like `vecdex_eval`, the script asks macOS for a performance core (QoS class).
@@ -55,8 +55,8 @@ also go to stdout and the progress to stderr.
     hnswlib and vecdex: squared L2 or 1 − ip), so the script recomputes every distance, found
     and true, from the vectors in float64.
 - **Memory** is the built index's size as the library reports it: FAISS's serialized index,
-  hnswlib's `index_file_size()`, and vecdex's `memory_bytes()` if the bindings expose it
-  (otherwise `nan`). All three hold the full float32 vectors plus the links.
+  hnswlib's `index_file_size()` and vecdex's `memory_bytes()`. All three hold the full float32
+  vectors plus the links.
 - **Build time** is the wall time of the single `add` call.
 
 ## Datasets
