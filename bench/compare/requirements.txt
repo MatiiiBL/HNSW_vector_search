@@ -1,0 +1,18 @@
+# For bench/compare/compare.py, scripts/convert_ann_hdf5.py and scripts/plot_recall_qps.py.
+# Every version pinned: `pip freeze` of a fresh Python 3.13 venv on macOS arm64 (2026-10-27).
+# hnswlib has no wheels, so pip compiles it (with -march=native).
+contourpy==1.4.0
+cycler==0.12.1
+faiss-cpu==1.15.1
+fonttools==4.68.0
+h5py==3.16.0
+hnswlib==0.8.0
+kiwisolver==1.5.1
+matplotlib==3.11.2
+numpy==2.5.3
+packaging==26.3
+pillow==13.0.0
+pyparsing==3.3.3
+python-dateutil==3.0.0
+six==1.17.0
+tzdata==2026.5
