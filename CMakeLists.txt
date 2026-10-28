@@ -42,7 +42,8 @@ add_library(vecdex
     src/kernels.cpp
     src/kernels_scalar.cpp
     src/recall.cpp
-    src/vector_ops.cpp)
+    src/vector_ops.cpp
+    src/xxhash64.cpp)
 add_library(vecdex::vecdex ALIAS vecdex)
 
 # SIMD kernels for the target architecture(s). Each file is also guarded by the preprocessor

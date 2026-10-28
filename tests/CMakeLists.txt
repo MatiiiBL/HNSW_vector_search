@@ -19,7 +19,11 @@ add_executable(vecdex_tests
     matrix_test.cpp
     recall_test.cpp
     siftsmall_test.cpp
-    smoke_test.cpp)
+    smoke_test.cpp
+    xxhash64_test.cpp)
+
+# Some tests reach internal headers, such as the checksum's.
+target_include_directories(vecdex_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 target_link_libraries(vecdex_tests PRIVATE
     vecdex::vecdex
