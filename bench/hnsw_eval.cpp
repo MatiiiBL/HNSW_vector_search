@@ -1,10 +1,10 @@
 // Builds an approximate nearest-neighbor index on a TEXMEX dataset, then sweeps efSearch and
-// prints one CSV row per ef: recall@k against the dataset's ground truth, and single-thread
-// queries per second. Every library goes through the same loading, timing and recall code, so
-// their rows are directly comparable.
+// prints one CSV row per ef: recall@k against the dataset's ground truth, and queries per second.
+// Every library goes through the same loading, timing and recall code, so their rows are
+// directly comparable.
 //
 //   vecdex_eval <dir> <name> [--lib vecdex] [--M 16] [--ef-construction 200] [--k 10]
-//               [--ef 10,16,32,64,128,256,512] [--repeats 5]
+//               [--ef 10,16,32,64,128,256,512] [--repeats 5] [--threads 1]
 //
 // --lib is one of:
 //   vecdex                 this library
@@ -15,8 +15,14 @@
 // Reads <dir>/<name>_base.fvecs, <name>_query.fvecs and <name>_groundtruth.ivecs (for example
 // data/sift sift). L2 only. Run a Release build. QPS is the median of `repeats` timed passes over
 // all queries, after one untimed warmup pass.
+//
+// --threads N builds the index on N threads and runs each pass as a batch search on N threads,
+// both libraries parallelized the same way (threads claiming items from a shared counter). With
+// 1, the default, a pass calls search() once per query, exactly as before batch search existed,
+// so single-thread rows compare directly with older runs.
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -26,11 +32,13 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -50,6 +58,39 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using vecdex::Matrix;
 using vecdex::Neighbor;
+using Results = std::vector<std::vector<Neighbor>>;
+
+// Calls fn(i) for every i in [0, count) on `threads` threads that claim items from a shared
+// counter, the scheme HnswIndex uses internally, so hnswlib is parallelized the same way. The
+// first exception is rethrown once every thread has stopped.
+template <typename Fn>
+void parallel_for(std::size_t count, std::size_t threads, const Fn& fn) {
+    std::atomic<std::size_t> next{0};
+    std::exception_ptr error;
+    std::once_flag first_error;
+    const auto work = [&] {
+        try {
+            for (std::size_t i = next.fetch_add(1, std::memory_order_relaxed); i < count;
+                 i = next.fetch_add(1, std::memory_order_relaxed)) {
+                fn(i);
+            }
+        } catch (...) {
+            next.store(count, std::memory_order_relaxed);
+            std::call_once(first_error, [&error] { error = std::current_exception(); });
+        }
+    };
+    std::vector<std::thread> helpers;
+    for (std::size_t t = 1; t < std::min(threads, count); ++t) {
+        helpers.emplace_back(work);
+    }
+    work();
+    for (std::thread& helper : helpers) {
+        helper.join();
+    }
+    if (error) {
+        std::rethrow_exception(error);
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // The indexes under test
@@ -64,10 +105,13 @@ public:
     Engine(Engine&&) = delete;
     Engine& operator=(Engine&&) = delete;
 
-    virtual void build(const Matrix<float>& base) = 0;
+    virtual void build(const Matrix<float>& base, std::size_t threads) = 0;
     // Up to k neighbors, closest first, with squared L2 distances.
     virtual std::vector<Neighbor> search(std::span<const float> query, std::size_t k,
                                          std::size_t ef) = 0;
+    // search() for every row of `queries`, on `threads` threads.
+    virtual Results search_batch(const Matrix<float>& queries, std::size_t k, std::size_t ef,
+                                 std::size_t threads) = 0;
     virtual std::size_t memory_bytes() const = 0;
     // One line about the built index, for stderr.
     virtual std::string describe() const = 0;
@@ -78,11 +122,18 @@ public:
     VecdexEngine(std::size_t dim, const vecdex::HnswParams& params)
         : index_(dim, vecdex::Metric::L2, params) {}
 
-    void build(const Matrix<float>& base) override { index_.add(base); }
+    void build(const Matrix<float>& base, std::size_t threads) override {
+        index_.add(base, threads);
+    }
 
     std::vector<Neighbor> search(std::span<const float> query, std::size_t k,
                                  std::size_t ef) override {
         return index_.search(query, k, ef);
+    }
+
+    Results search_batch(const Matrix<float>& queries, std::size_t k, std::size_t ef,
+                         std::size_t threads) override {
+        return index_.search_batch(queries, k, ef, threads);
     }
 
     std::size_t memory_bytes() const override { return index_.memory_bytes(); }
@@ -138,24 +189,33 @@ public:
         }
     }
 
-    void build(const Matrix<float>& base) override {
+    // addPoint is thread-safe. The first point goes in alone, as in hnswlib's Python bindings,
+    // so that every concurrent insert finds an entry point.
+    void build(const Matrix<float>& base, std::size_t threads) override {
         index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(
             space_.get(), base.rows(), params_.M, params_.ef_construction, params_.seed);
-        for (std::size_t r = 0; r < base.rows(); ++r) {
-            index_->addPoint(base.row(r).data(), r);  // label = row, so ids match the truth
+        if (base.empty()) {
+            return;
         }
+        index_->addPoint(base.row(0).data(), 0);  // label = row, so ids match the truth
+        parallel_for(base.rows() - 1, threads, [this, &base](std::size_t i) {
+            index_->addPoint(base.row(i + 1).data(), i + 1);
+        });
     }
 
     std::vector<Neighbor> search(std::span<const float> query, std::size_t k,
                                  std::size_t ef) override {
         index_->setEf(ef);
-        auto queue = index_->searchKnn(query.data(), k);  // a max-heap: farthest on top
-        std::vector<Neighbor> found(queue.size());
-        for (std::size_t i = found.size(); i-- > 0;) {
-            found[i] = {.distance = queue.top().first,
-                        .id = static_cast<vecdex::Id>(queue.top().second)};
-            queue.pop();
-        }
+        return knn(query, k);
+    }
+
+    // ef is index state in hnswlib, so it is set once, before the threads start reading it.
+    Results search_batch(const Matrix<float>& queries, std::size_t k, std::size_t ef,
+                         std::size_t threads) override {
+        index_->setEf(ef);
+        Results found(queries.rows());
+        parallel_for(queries.rows(), threads,
+                     [&](std::size_t q) { found[q] = knn(queries.row(q), k); });
         return found;
     }
 
@@ -167,6 +227,17 @@ public:
     }
 
 private:
+    std::vector<Neighbor> knn(std::span<const float> query, std::size_t k) const {
+        auto queue = index_->searchKnn(query.data(), k);  // a max-heap: farthest on top
+        std::vector<Neighbor> found(queue.size());
+        for (std::size_t i = found.size(); i-- > 0;) {
+            found[i] = {.distance = queue.top().first,
+                        .id = static_cast<vecdex::Id>(queue.top().second)};
+            queue.pop();
+        }
+        return found;
+    }
+
     vecdex::HnswParams params_;
     bool vecdex_kernel_;
     std::unique_ptr<hnswlib::SpaceInterface<float>> space_;  // must outlive index_
@@ -184,11 +255,13 @@ struct Options {
     std::size_t k = 10;
     std::vector<std::size_t> efs{10, 16, 32, 64, 128, 256, 512};
     std::size_t repeats = 5;
+    std::size_t threads = 1;
 };
 
 constexpr std::string_view kUsage =
     "usage: vecdex_eval <dir> <name> [--lib vecdex|hnswlib|hnswlib-vecdex-kernel] [--M 16] "
-    "[--ef-construction 200] [--k 10] [--ef 10,16,32,64,128,256,512] [--repeats 5]\n";
+    "[--ef-construction 200] [--k 10] [--ef 10,16,32,64,128,256,512] [--repeats 5] "
+    "[--threads 1]\n";
 
 std::unique_ptr<Engine> make_engine(const Options& options, std::size_t dim) {
     if (options.lib == "vecdex") {
@@ -256,6 +329,8 @@ std::optional<Options> parse(int argc, char** argv) {
             target = &options.k;
         } else if (flag == "--repeats") {
             target = &options.repeats;
+        } else if (flag == "--threads") {
+            target = &options.threads;
         }
         const std::optional<std::size_t> number = parse_size(value);
         if (target == nullptr || !number || *number == 0) {
@@ -327,17 +402,23 @@ int run(int argc, char** argv) {
         kth_distance[q] = vecdex::l2_squared(queries.row(q), base.row(kth));
     }
 
+    const std::size_t threads = options->threads;
     const std::unique_ptr<Engine> engine = make_engine(*options, base.dim());
     const Clock::time_point build_start = Clock::now();
-    engine->build(base);
+    engine->build(base, threads);
     const double build_seconds = seconds_since(build_start);
-    std::cerr << "built in " << build_seconds << " s; " << engine->describe() << "\n";
+    std::cerr << "built in " << build_seconds << " s on " << threads << " thread(s); "
+              << engine->describe() << "\n";
 
     std::cout << "lib,dataset,n,dim,M,ef_construction,build_s,memory_mb,k,ef,recall,"
-                 "recall_dist,qps\n";
+                 "recall_dist,qps,threads\n";
     for (const std::size_t ef : options->efs) {
-        std::vector<std::vector<Neighbor>> results(queries.rows());
+        Results results(queries.rows());
         const auto run_all = [&] {
+            if (threads > 1) {
+                results = engine->search_batch(queries, k, ef, threads);
+                return;
+            }
             for (std::size_t q = 0; q < queries.rows(); ++q) {
                 results[q] = engine->search(queries.row(q), k, ef);
             }
@@ -359,11 +440,11 @@ int run(int argc, char** argv) {
             recall_dist += vecdex::threshold_recall_at_k(results[q], kth_distance[q], k);
         }
         const auto n_queries = static_cast<double>(queries.rows());
-        std::printf("%s,%s,%zu,%zu,%zu,%zu,%.1f,%.0f,%zu,%zu,%.4f,%.4f,%.0f\n",
+        std::printf("%s,%s,%zu,%zu,%zu,%zu,%.1f,%.0f,%zu,%zu,%.4f,%.4f,%.0f,%zu\n",
                     options->lib.c_str(), options->name.c_str(), base.rows(), base.dim(),
                     options->params.M, options->params.ef_construction, build_seconds,
                     static_cast<double>(engine->memory_bytes()) / 1e6, k, ef, recall / n_queries,
-                    recall_dist / n_queries, n_queries / median);
+                    recall_dist / n_queries, n_queries / median, threads);
         std::fflush(stdout);
     }
     return 0;
