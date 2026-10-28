@@ -41,6 +41,8 @@ static_assert(std::endian::native == std::endian::little,
               "the index format is little-endian; a big-endian host would need byte swapping");
 static_assert(sizeof(std::size_t) == sizeof(std::uint64_t),
               "the format's 64-bit counts are used as size_t");
+static_assert(2 * HnswParams::kMaxM <= std::numeric_limits<Id>::max(),
+              "a link block's count, up to 2M, is stored as an Id");
 
 // "\x89VDXHNSW". A non-ASCII first byte, as in PNG, so that no text file can start like this.
 constexpr std::array<std::byte, 8> kMagic{std::byte{0x89}, std::byte{'V'}, std::byte{'D'},
@@ -212,8 +214,8 @@ Layout check_header(const Header& h, std::uintmax_t file_size, const fs::path& p
     if (h.M < 2) {
         fail(path, std::format("M is {}, below the minimum of 2", h.M));
     }
-    if (h.M > std::numeric_limits<Id>::max() / 2) {  // a block's count is an Id, up to 2M
-        fail(path, std::format("M is {}, too large for 32-bit link counts", h.M));
+    if (h.M > HnswParams::kMaxM) {
+        fail(path, std::format("M is {}, above the maximum of {}", h.M, HnswParams::kMaxM));
     }
     if (h.ef_construction == 0) {
         fail(path, "ef_construction is 0");
@@ -233,7 +235,7 @@ Layout check_header(const Header& h, std::uintmax_t file_size, const fs::path& p
     }
 
     // FORMAT.md, "Sections": levels, layer-0 blocks, upper-layer blocks, vectors.
-    const std::uint64_t layer0_block = 1 + 2 * h.M;  // no overflow: M fits in 31 bits
+    const std::uint64_t layer0_block = 1 + 2 * h.M;  // no overflow: M <= kMaxM
     const std::uint64_t upper_block = 1 + h.M;
     const auto bytes = [&path](std::uint64_t count, std::uint64_t per_item, std::uint64_t size) {
         return checked_mul(checked_mul(count, per_item, path), size, path);

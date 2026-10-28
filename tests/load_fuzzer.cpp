@@ -100,12 +100,6 @@ void check_usable(vecdex::HnswIndex& index) {
     const std::vector<float> query(index.dim(), 0.5F);
     const std::size_t size = index.size();
     (void)index.search(query, 5, 16);
-    // add() allocates 1 + 2M ids for the new node. A valid empty index can carry any M the
-    // constructor accepts, so that allocation is as large as the parameters ask for: a property
-    // of the parameters, which HnswIndex(dim, metric, params) shares, not of load().
-    if (index.params().M > 1024) {
-        return;
-    }
     if (index.add(query) != size || !index.inspect().violations.empty()) {
         std::abort();
     }

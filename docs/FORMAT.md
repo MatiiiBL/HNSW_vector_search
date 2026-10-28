@@ -37,7 +37,7 @@ bytes. For SIFT1M (n = 10⁶, dim = 128, M = 16, U ≈ n / (M − 1)) that is ab
 | 8 | u32 | format version | `1` |
 | 12 | u32 | metric | `0` = L2 (squared Euclidean), `1` = InnerProduct (1 − ⟨a, b⟩), `2` = Cosine |
 | 16 | u64 | dim | ≥ 1 |
-| 24 | u64 | M | 2 to 2³¹ − 1 (a link count is a u32 and can reach 2M) |
+| 24 | u64 | M | 2 to 10,000 (`HnswParams::kMaxM`, the constructor's limit) |
 | 32 | u64 | ef_construction | ≥ 1 |
 | 40 | u64 | seed | any |
 | 48 | u64 | n, the node count | ≤ 2³² − 1 (ids are u32) |

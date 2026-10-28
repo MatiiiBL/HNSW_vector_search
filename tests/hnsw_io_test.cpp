@@ -494,13 +494,14 @@ TEST(HnswSaveLoad, HostileHeaderFieldsAreRejected) {
         bool wide;  // a 64-bit field, else 32-bit
         std::string_view reason;
     };
-    const std::array<Case, 15> kCases{{
+    const std::array<Case, 16> kCases{{
         {kVersionAt, 0, false, "format version 0 is not supported"},
         {kVersionAt, 2, false, "format version 2 is not supported"},
         {kMetricAt, 3, false, "unknown metric code 3"},
         {kDimAt, 0, true, "dimension is 0"},
         {kMAt, 1, true, "below the minimum of 2"},
-        {kMAt, std::uint64_t{1} << 40U, true, "too large for 32-bit link counts"},
+        {kMAt, HnswParams::kMaxM + 1, true, "above the maximum of 10000"},
+        {kMAt, std::uint64_t{1} << 40U, true, "above the maximum of 10000"},
         {kEfConstructionAt, 0, true, "ef_construction is 0"},
         {kNodesAt, std::uint64_t{1} << 32U, true, "more than 32-bit ids can address"},
         {kNodesAt, nodes + 1, true, "truncated or corrupted"},
@@ -527,6 +528,23 @@ TEST(HnswSaveLoad, HostileHeaderFieldsAreRejected) {
     put(empty, kMaxLevelAt, std::uint64_t{1});
     reseal(empty);
     EXPECT_TRUE(rejected(dir / "bad.vdx", empty, "an empty index must have"));
+}
+
+// An empty index's file size doesn't depend on M, so the size check can't catch a huge one: only
+// the range check stops the first add() from allocating a link block of 1 + 2M ids.
+TEST(HnswSaveLoad, EmptyFileWithMAboveTheMaximumIsRejected) {
+    const TempDir dir;
+    Bytes file = saved_bytes(HnswIndex(2), dir);
+    put(file, kMAt, std::uint64_t{HnswParams::kMaxM + 1});
+    reseal(file);
+    EXPECT_TRUE(rejected(dir / "bad.vdx", file, "above the maximum of 10000"));
+
+    put(file, kMAt, std::uint64_t{HnswParams::kMaxM});
+    reseal(file);
+    write_file(dir / "max.vdx", file);
+    HnswIndex loaded = HnswIndex::load(dir / "max.vdx");
+    EXPECT_EQ(loaded.params().M, HnswParams::kMaxM);
+    EXPECT_EQ(loaded.add(std::vector<float>{1.0F, 2.0F}), 0U);
 }
 
 // A count in the header must not size an allocation before it is checked against the file size.

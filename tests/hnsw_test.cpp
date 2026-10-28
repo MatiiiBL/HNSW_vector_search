@@ -69,6 +69,9 @@ Built build(std::size_t rows, std::size_t dim, Metric metric, const HnswParams& 
 TEST(Hnsw, RejectsBadParameters) {
     EXPECT_THROW((void)HnswIndex(0), std::invalid_argument);
     EXPECT_THROW((void)HnswIndex(4, Metric::L2, params(1, 100)), std::invalid_argument);
+    EXPECT_NO_THROW((void)HnswIndex(4, Metric::L2, params(HnswParams::kMaxM, 100)));
+    EXPECT_THROW((void)HnswIndex(4, Metric::L2, params(HnswParams::kMaxM + 1, 100)),
+                 std::invalid_argument);
     EXPECT_THROW((void)HnswIndex(4, Metric::L2, params(16, 0)), std::invalid_argument);
 }
 

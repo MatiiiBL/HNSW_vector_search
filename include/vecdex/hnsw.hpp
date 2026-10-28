@@ -29,6 +29,10 @@ struct HnswParams {
     // Links each new node makes per layer. Layer 0 allows up to 2*M links per node, higher
     // layers up to M. More links: better recall, more memory, slower build. Typical: 8 to 48.
     std::size_t M = 16;
+    // The largest M accepted: hnswlib's limit, although hnswlib clamps larger values instead of
+    // rejecting them. Far above any useful M, it keeps a node's link block (1 + 2M ids) small
+    // and its link counts well within their 32-bit storage.
+    static constexpr std::size_t kMaxM = 10'000;
     // Candidate-list size while inserting: build quality versus build time. Typical: 100 to 500.
     std::size_t ef_construction = 200;
     // Seeds the random level of each node: the same vectors added in the same order with the
@@ -58,7 +62,8 @@ struct GraphReport {
 // half-updated and should be discarded.
 class HnswIndex {
 public:
-    // Throws std::invalid_argument if dim is 0, M < 2, or ef_construction is 0.
+    // Throws std::invalid_argument if dim is 0, M is outside [2, HnswParams::kMaxM], or
+    // ef_construction is 0.
     explicit HnswIndex(std::size_t dim, Metric metric = Metric::L2, HnswParams params = {});
     ~HnswIndex();
     HnswIndex(HnswIndex&&) noexcept;

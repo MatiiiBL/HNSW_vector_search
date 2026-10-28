@@ -43,6 +43,10 @@ HnswParams validated(const HnswParams& params) {
     if (params.M < 2) {
         throw std::invalid_argument("HnswIndex: M must be at least 2");
     }
+    if (params.M > HnswParams::kMaxM) {
+        throw std::invalid_argument(
+            std::format("HnswIndex: M must be at most {}", HnswParams::kMaxM));
+    }
     if (params.ef_construction == 0) {
         throw std::invalid_argument("HnswIndex: ef_construction must be positive");
     }
