@@ -117,3 +117,49 @@ jobs:
       - name: Smoke-run the benchmarks (one iteration each)
         if: matrix.preset == 'release'
         run: build/release/bench/vecdex_bench --benchmark_min_time=1x
+
+  python:
+    name: Python bindings · ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: Linux x86-64 · g++-14
+            cxx: g++-14
+          - os: macos-15
+            platform: macOS arm64 · Apple clang
+            cxx: clang++
+    env:
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Restore siftsmall
+        id: siftsmall
+        uses: actions/cache@v6
+        with:
+          path: data/siftsmall
+          key: siftsmall-b8f1e59b
+
+      - name: Download siftsmall
+        if: steps.siftsmall.outputs.cache-hit != 'true'
+        run: scripts/download_siftsmall.sh
+
+      # pip builds in a fresh environment, the way a user's install does. Warnings are errors
+      # here, as in the C++ jobs; pyproject.toml turns that off for users' installs.
+      - name: Install the package with its test dependencies
+        run: >
+          python -m pip install --verbose
+          --config-settings=cmake.define.VECDEX_WARNINGS_AS_ERRORS=ON ".[test]"
+
+      - name: Run the Python tests
+        run: python -m pytest
+
+      - name: Smoke-run the binding benchmark (CI timings are too noisy to record)
+        run: python python/bench/binding_overhead.py data/siftsmall siftsmall --ef 16,64 --repeats 1
