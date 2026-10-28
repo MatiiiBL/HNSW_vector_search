@@ -237,16 +237,19 @@ TEST(Hnsw, ConcurrentSearchesMatchSequentialOnes) {
     }
     constexpr std::size_t kThreads = 4;
     std::vector<std::vector<std::vector<Neighbor>>> got(kThreads);
-    {
-        std::vector<std::jthread> threads;
-        for (std::size_t t = 0; t < kThreads; ++t) {
-            threads.emplace_back([&, t] {
-                for (std::size_t q = 0; q < queries.rows(); ++q) {
-                    got[t].push_back(built.hnsw.search(queries.row(q), 10, 40));
-                }
-            });
-        }
-    }  // jthreads join here
+    // std::thread rather than std::jthread: Apple clang 17's libc++ (the macos-15 CI image) still
+    // gates jthread behind -fexperimental-library.
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+            for (std::size_t q = 0; q < queries.rows(); ++q) {
+                got[t].push_back(built.hnsw.search(queries.row(q), 10, 40));
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
     for (std::size_t t = 0; t < kThreads; ++t) {
         EXPECT_EQ(got[t], expected) << "thread " << t;
     }
