@@ -1,6 +1,7 @@
 #include "vecdex/recall.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <stdexcept>
 #include <utility>
@@ -29,6 +30,23 @@ double recall_at_k(std::span<const Neighbor> found, std::span<const std::int32_t
             ++hits;
         }
     }
+    return static_cast<double>(hits) / static_cast<double>(k);
+}
+
+double threshold_recall_at_k(std::span<const Neighbor> found, float kth_true_distance,
+                             std::size_t k, float tolerance) {
+    if (k == 0) {
+        throw std::invalid_argument("threshold_recall_at_k: k must be positive");
+    }
+    if (!std::isfinite(kth_true_distance) || !std::isfinite(tolerance) || tolerance < 0.0F) {
+        throw std::invalid_argument(
+            "threshold_recall_at_k: distance and tolerance must be finite, tolerance >= 0");
+    }
+    const float threshold =
+        kth_true_distance + tolerance * std::max(std::abs(kth_true_distance), 1.0F);
+    const auto top_found = found.first(std::min(k, found.size()));
+    const auto hits = std::ranges::count_if(
+        top_found, [threshold](const Neighbor& n) { return n.distance <= threshold; });
     return static_cast<double>(hits) / static_cast<double>(k);
 }
 
