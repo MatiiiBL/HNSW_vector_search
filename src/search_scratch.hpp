@@ -52,6 +52,7 @@ struct SearchScratch {
     VisitedList visited;
     std::vector<Neighbor> candidates;  // min-heap of nodes still to expand
     std::vector<Neighbor> results;     // max-heap of the best ef found so far
+    std::vector<Id> fresh;             // unvisited neighbors of the node being expanded
 };
 
 // Lends SearchScratch to searches, so concurrent searches never share one and each keeps its

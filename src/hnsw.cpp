@@ -33,6 +33,16 @@ constexpr bool farther(const Neighbor& a, const Neighbor& b) noexcept {
     return closer(b, a);
 }
 
+// Asks the CPU to start loading [p, p + bytes) into cache and returns at once. A hint: it never
+// faults and never changes results. 64-byte steps match x86 cache lines; on Apple's 128-byte
+// lines every other hint is redundant but cheap. GCC and Clang only, like the rest of the build.
+void prefetch(const void* p, std::size_t bytes) noexcept {
+    const auto* first = static_cast<const char*>(p);
+    for (std::size_t offset = 0; offset < bytes; offset += 64) {
+        __builtin_prefetch(first + offset);
+    }
+}
+
 }  // namespace
 
 HnswIndex::HnswIndex(std::size_t dim, Metric metric, HnswParams params)
@@ -262,10 +272,12 @@ void HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef,
     detail::VisitedList& visited = scratch.visited;
     std::vector<Neighbor>& candidates = scratch.candidates;
     std::vector<Neighbor>& results = scratch.results;
+    std::vector<Id>& fresh = scratch.fresh;
     visited.reset(size());
     visited.insert(entry.id);
     candidates.assign(1, entry);  // assign keeps the capacity from earlier searches
     results.assign(1, entry);
+    const std::size_t vector_bytes = dim() * sizeof(float);
 
     while (!candidates.empty()) {
         std::ranges::pop_heap(candidates, farther);
@@ -274,10 +286,17 @@ void HnswIndex::search_layer(const float* query, Neighbor entry, std::size_t ef,
         if (results.size() >= ef && closer(results.front(), current)) {
             break;
         }
+        // Prefetch every unvisited neighbor's vector before computing any distance. Each one is
+        // likely a cache miss (a random 512 bytes out of SIFT1M's 512 MB); issued together, the
+        // misses overlap instead of each distance waiting for its own.
+        fresh.clear();
         for (const Id id : links(current.id, layer)) {
-            if (!visited.insert(id)) {
-                continue;
+            if (visited.insert(id)) {
+                fresh.push_back(id);
+                prefetch(vector_of(id), vector_bytes);
             }
+        }
+        for (const Id id : fresh) {
             const Neighbor next{.distance = distance(query, vector_of(id)), .id = id};
             if (results.size() < ef || closer(next, results.front())) {
                 candidates.push_back(next);
