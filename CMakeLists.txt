@@ -38,6 +38,7 @@ add_library(vecdex
     src/brute_force.cpp
     src/distance.cpp
     src/hnsw.cpp
+    src/hnsw_io.cpp
     src/io.cpp
     src/kernels.cpp
     src/kernels_scalar.cpp

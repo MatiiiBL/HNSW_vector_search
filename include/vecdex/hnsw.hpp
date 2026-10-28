@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -98,6 +99,21 @@ public:
     // Bytes held by vectors and links (element storage only, no allocator overhead).
     std::size_t memory_bytes() const noexcept;
 
+    // Writes the index to `path` in the format of docs/FORMAT.md. Atomic: the bytes go to a new
+    // temporary file in the same directory, which replaces `path` only once it is complete, so
+    // `path` never holds a partial index. On failure the temporary file is removed and `path` is
+    // untouched. Like search(), it may run alongside searches but not alongside add().
+    // Throws std::runtime_error, naming the path, on any I/O error.
+    void save(const std::filesystem::path& path) const;
+
+    // Reads an index written by save(), with everything search() and add() need. The file is
+    // treated as hostile: its sizes are checked against the file size before anything is
+    // allocated, a checksum catches corruption, and the graph is validated before any link is
+    // followed. A bad file throws std::runtime_error naming the path; it never crashes.
+    // add() after load() builds the same graph as add() on the index that was saved: the level
+    // generator is restored by re-seeding it and skipping one draw per stored node.
+    static HnswIndex load(const std::filesystem::path& path);
+
 private:
     // Whether a graph walk locks each node's links. Only the inserts of a parallel add() do;
     // search() never overlaps add(), so it walks the graph without any synchronization.
@@ -133,6 +149,9 @@ private:
                       detail::SearchScratch& scratch) const;
     std::vector<Neighbor> search_unchecked(std::span<const float> query, std::size_t k,
                                            std::size_t ef) const;
+
+    // load()'s check that every link block can be followed safely (hnsw_io.cpp).
+    void check_links(const std::filesystem::path& path) const;
 
     Metric metric_;
     HnswParams params_;

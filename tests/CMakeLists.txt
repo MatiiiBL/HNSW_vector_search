@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(vecdex_tests
     brute_force_test.cpp
     distance_test.cpp
+    hnsw_io_test.cpp
     hnsw_parallel_test.cpp
     hnsw_test.cpp
     io_test.cpp
@@ -22,7 +23,7 @@ add_executable(vecdex_tests
     smoke_test.cpp
     xxhash64_test.cpp)
 
-# Some tests reach internal headers, such as the checksum's.
+# Some tests reach internal headers: the checksum, to craft files that pass it.
 target_include_directories(vecdex_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 target_link_libraries(vecdex_tests PRIVATE
