@@ -33,8 +33,9 @@ namespace {
 using vecdex::HnswIndex;
 using vecdex::Metric;
 
-// knn_query's search breadth unless the caller sets one: recall@10 is about 0.96 on SIFT1M at
-// ef = 64, where hnswlib's default of 10 gives about 0.85.
+// knn_query's search breadth unless the caller sets one. Measured on SIFT1M, M=16,
+// efConstruction=200: recall@10 is 0.9631 at ef = 64; at hnswlib's default of 10 it is 0.7060
+// (0.7107 for hnswlib itself).
 constexpr std::size_t kDefaultEf = 64;
 
 // The metric names hnswlib uses.
