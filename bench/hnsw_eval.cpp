@@ -5,6 +5,7 @@
 //
 //   vecdex_eval <dir> <name> [--lib vecdex] [--M 16] [--ef-construction 200] [--k 10]
 //               [--ef 10,16,32,64,128,256,512] [--repeats 5] [--threads 1]
+//               [--save FILE] [--load FILE]
 //
 // --lib is one of:
 //   vecdex                 this library
@@ -12,9 +13,15 @@
 //   hnswlib-vecdex-kernel  hnswlib calling vecdex's distance kernel, which separates the graph
 //                          code from the distance code in a comparison
 //
+// --save FILE writes the built index to FILE (any library, in its own format). --load FILE reads a
+// vecdex index instead of building one; the CSV then reports the file's M and ef_construction, and
+// build_s is nan. Both report their time and the file size on stderr.
+//
 // Reads <dir>/<name>_base.fvecs, <name>_query.fvecs and <name>_groundtruth.ivecs (for example
 // data/sift sift). L2 only. Run a Release build. QPS is the median of `repeats` timed passes over
-// all queries, after one untimed warmup pass.
+// all queries, after one untimed warmup pass. Each row also prints a fingerprint of all its
+// results to stderr: equal fingerprints mean identical ids and distances, for example before
+// --save and after --load.
 //
 // --threads N builds the index on N threads and runs each pass as a batch search on N threads,
 // both libraries parallelized the same way (threads claiming items from a shared counter). With
@@ -23,14 +30,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -106,6 +116,7 @@ public:
     Engine& operator=(Engine&&) = delete;
 
     virtual void build(const Matrix<float>& base, std::size_t threads) = 0;
+    virtual void save(const std::filesystem::path& path) const = 0;
     // Up to k neighbors, closest first, with squared L2 distances.
     virtual std::vector<Neighbor> search(std::span<const float> query, std::size_t k,
                                          std::size_t ef) = 0;
@@ -121,10 +132,12 @@ class VecdexEngine final : public Engine {
 public:
     VecdexEngine(std::size_t dim, const vecdex::HnswParams& params)
         : index_(dim, vecdex::Metric::L2, params) {}
+    explicit VecdexEngine(vecdex::HnswIndex index) : index_(std::move(index)) {}
 
     void build(const Matrix<float>& base, std::size_t threads) override {
         index_.add(base, threads);
     }
+    void save(const std::filesystem::path& path) const override { index_.save(path); }
 
     std::vector<Neighbor> search(std::span<const float> query, std::size_t k,
                                  std::size_t ef) override {
@@ -202,6 +215,9 @@ public:
             index_->addPoint(base.row(i + 1).data(), i + 1);
         });
     }
+    void save(const std::filesystem::path& path) const override {
+        index_->saveIndex(path.string());
+    }
 
     std::vector<Neighbor> search(std::span<const float> query, std::size_t k,
                                  std::size_t ef) override {
@@ -256,12 +272,14 @@ struct Options {
     std::vector<std::size_t> efs{10, 16, 32, 64, 128, 256, 512};
     std::size_t repeats = 5;
     std::size_t threads = 1;
+    std::optional<std::filesystem::path> save;
+    std::optional<std::filesystem::path> load;  // vecdex only
 };
 
 constexpr std::string_view kUsage =
     "usage: vecdex_eval <dir> <name> [--lib vecdex|hnswlib|hnswlib-vecdex-kernel] [--M 16] "
     "[--ef-construction 200] [--k 10] [--ef 10,16,32,64,128,256,512] [--repeats 5] "
-    "[--threads 1]\n";
+    "[--threads 1] [--save FILE] [--load FILE (vecdex only)]\n";
 
 std::unique_ptr<Engine> make_engine(const Options& options, std::size_t dim) {
     if (options.lib == "vecdex") {
@@ -320,6 +338,14 @@ std::optional<Options> parse(int argc, char** argv) {
             options.efs = *list;
             continue;
         }
+        if (flag == "--save") {
+            options.save = std::filesystem::path(value);
+            continue;
+        }
+        if (flag == "--load") {
+            options.load = std::filesystem::path(value);
+            continue;
+        }
         std::size_t* target = nullptr;
         if (flag == "--M") {
             target = &options.params.M;
@@ -338,6 +364,9 @@ std::optional<Options> parse(int argc, char** argv) {
         }
         *target = *number;
     }
+    if (options.load && options.lib != "vecdex") {
+        return std::nullopt;
+    }
     return options;
 }
 
@@ -346,6 +375,30 @@ std::optional<Options> parse(int argc, char** argv) {
 
 double seconds_since(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+double file_megabytes(const std::filesystem::path& path) {
+    return static_cast<double>(std::filesystem::file_size(path)) / 1e6;
+}
+
+// FNV-1a over every result's id and distance bits. Results are deterministic, so two runs agree
+// on it exactly when they return the same neighbors at the same distances.
+std::uint64_t fingerprint(const std::vector<std::vector<Neighbor>>& results) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    const auto mix = [&hash](std::uint32_t word) {
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            hash ^= (word >> shift) & 0xFFU;
+            hash *= 1099511628211ULL;
+        }
+    };
+    for (const std::vector<Neighbor>& found : results) {
+        mix(static_cast<std::uint32_t>(found.size()));
+        for (const Neighbor& n : found) {
+            mix(n.id);
+            mix(std::bit_cast<std::uint32_t>(n.distance));
+        }
+    }
+    return hash;
 }
 
 // macOS places threads on performance or efficiency cores by their QoS class. The M4's
@@ -402,13 +455,38 @@ int run(int argc, char** argv) {
         kth_distance[q] = vecdex::l2_squared(queries.row(q), base.row(kth));
     }
 
+    // The index under test, built here or read with --load (then it has the file's parameters).
     const std::size_t threads = options->threads;
-    const std::unique_ptr<Engine> engine = make_engine(*options, base.dim());
-    const Clock::time_point build_start = Clock::now();
-    engine->build(base, threads);
-    const double build_seconds = seconds_since(build_start);
-    std::cerr << "built in " << build_seconds << " s on " << threads << " thread(s); "
-              << engine->describe() << "\n";
+    std::unique_ptr<Engine> engine;
+    vecdex::HnswParams params = options->params;
+    double build_seconds = std::numeric_limits<double>::quiet_NaN();
+    if (options->load) {
+        const Clock::time_point load_start = Clock::now();
+        vecdex::HnswIndex index = vecdex::HnswIndex::load(*options->load);
+        const double load_seconds = seconds_since(load_start);
+        if (index.dim() != base.dim() || index.metric() != vecdex::Metric::L2) {
+            throw std::runtime_error(std::format("{} is not an L2 index of dimension {}",
+                                                 options->load->string(), base.dim()));
+        }
+        params = index.params();
+        engine = std::make_unique<VecdexEngine>(std::move(index));
+        std::cerr << "loaded " << options->load->string() << " (" << file_megabytes(*options->load)
+                  << " MB) in " << load_seconds << " s; " << engine->describe() << "\n";
+    } else {
+        engine = make_engine(*options, base.dim());
+        const Clock::time_point build_start = Clock::now();
+        engine->build(base, threads);
+        build_seconds = seconds_since(build_start);
+        std::cerr << "built in " << build_seconds << " s on " << threads << " thread(s); "
+                  << engine->describe() << "\n";
+    }
+    if (options->save) {
+        const Clock::time_point save_start = Clock::now();
+        engine->save(*options->save);
+        const double save_seconds = seconds_since(save_start);
+        std::cerr << "saved " << options->save->string() << " (" << file_megabytes(*options->save)
+                  << " MB) in " << save_seconds << " s\n";
+    }
 
     std::cout << "lib,dataset,n,dim,M,ef_construction,build_s,memory_mb,k,ef,recall,"
                  "recall_dist,qps,threads\n";
@@ -432,6 +510,7 @@ int run(int argc, char** argv) {
         }
         std::ranges::sort(times);
         const double median = times[times.size() / 2];
+        std::cerr << std::format("ef {}: results fingerprint {:016x}\n", ef, fingerprint(results));
 
         double recall = 0.0;
         double recall_dist = 0.0;
@@ -441,8 +520,8 @@ int run(int argc, char** argv) {
         }
         const auto n_queries = static_cast<double>(queries.rows());
         std::printf("%s,%s,%zu,%zu,%zu,%zu,%.1f,%.0f,%zu,%zu,%.4f,%.4f,%.0f,%zu\n",
-                    options->lib.c_str(), options->name.c_str(), base.rows(), base.dim(),
-                    options->params.M, options->params.ef_construction, build_seconds,
+                    options->lib.c_str(), options->name.c_str(), base.rows(), base.dim(), params.M,
+                    params.ef_construction, build_seconds,
                     static_cast<double>(engine->memory_bytes()) / 1e6, k, ef, recall / n_queries,
                     recall_dist / n_queries, n_queries / median, threads);
         std::fflush(stdout);
