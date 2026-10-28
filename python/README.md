@@ -41,13 +41,13 @@ labels, distances = index.knn_query(vectors[:5], k=10)  # both of shape (5, 10)
 
 - **Input is float32, C-contiguous and aligned,** shaped `(n, dim)`, or `(dim,)` for one
   vector. It is read in place through the buffer protocol (NumPy arrays and their contiguous
-  views, `memoryview`, ...), with no copy.
+  views, `memoryview`, ...), with no copy: `add_items` needs no memory beyond what the index
+  itself grows by.
 - **Nothing is converted silently.** Any other dtype, float64 included, raises `TypeError`; a
   non-contiguous or unaligned array raises `ValueError`. The error names the one-line fix
   (`data.astype(np.float32)`, `np.ascontiguousarray(data)`), so a copy only happens where you
   can see it.
-- **`add_items` stages each batch in one transient copy** before storing it, so while it runs
-  it needs about `n * dim * 4` bytes on top of the index. A rejected batch adds nothing.
+- **A rejected batch adds nothing:** `add_items` checks every row before it stores any.
 - **Results** are new NumPy arrays: ids `int64`, distances `float32`, shape `(n, k)`, each row
   closest first. They own their memory and stay valid after the index is gone.
 - **Fewer than k neighbors** (when `k > len(index)`): the row ends with id `-1` and distance
@@ -60,8 +60,7 @@ labels, distances = index.knn_query(vectors[:5], k=10)  # both of shape (5, 10)
   parallel; an `add_items` waits for running queries and runs alone. Don't modify an array
   while a call that reads it is running.
 
-Saving and loading, and a `num_threads` argument for building and querying, will follow when
-the C++ library has them.
+Saving and loading, and a `num_threads` argument for building and querying, will follow.
 
 ## Development
 

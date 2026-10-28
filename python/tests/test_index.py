@@ -2,6 +2,8 @@
 conventions (shapes, dtypes, padding, ownership)."""
 
 import gc
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -240,6 +242,33 @@ def test_read_only_arrays_views_and_other_buffers_are_read_in_place():
     np.testing.assert_array_equal(index.add_items(memoryview(base[:5])), np.arange(10, 15))
     ids, _ = index.knn_query(base[10:12], k=1)
     np.testing.assert_array_equal(ids[:, 0], [0, 1])
+
+
+# Run in a fresh process, because the peak resident memory it reads is process-wide.
+ADD_ITEMS_PEAK_GROWTH = """
+import resource, sys
+import numpy as np
+import vecdex
+
+data = np.random.default_rng(0).random((4000, 4096), dtype=np.float32)  # 65.5 MB
+index = vecdex.Index("l2", 4096, M=2, ef_construction=8)
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+index.add_items(data)
+after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+unit = 1 if sys.platform == "darwin" else 1024  # ru_maxrss is in bytes on macOS, KiB on Linux
+print((after - before) * unit / data.nbytes)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs the resource module")
+def test_add_items_reads_the_batch_in_place():
+    # Adding a batch raises peak memory by the index's own copy of the vectors (M=2 keeps the
+    # graph's share small): 1.00x the batch, measured. Staging the batch in a copy first, as the
+    # binding once did, raised it to 2.0x. An earlier, higher peak could only hide growth, never
+    # add some, so this can't fail spuriously.
+    child = subprocess.run([sys.executable, "-I", "-c", ADD_ITEMS_PEAK_GROWTH],
+                           capture_output=True, text=True, check=True)
+    assert float(child.stdout.split()[-1]) < 1.5
 
 
 @pytest.mark.parametrize("space", SPACES)

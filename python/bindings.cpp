@@ -150,12 +150,9 @@ public:
 
     std::size_t count() const noexcept { return count_; }
 
-    std::span<const float> all() const noexcept {
-        return {static_cast<const float*>(buffer_.ptr), count_ * dim_};
-    }
-
-    std::span<const float> row(std::size_t i) const noexcept {
-        return all().subspan(i * dim_, dim_);
+    // The caller's memory itself, not a copy.
+    vecdex::MatrixView<float> view() const {
+        return {std::span(static_cast<const float*>(buffer_.ptr), count_ * dim_), dim_};
     }
 
 private:
@@ -208,14 +205,11 @@ public:
         std::size_t first = 0;
         {
             const py::gil_scoped_release release;
-            // HnswIndex::add takes the batch as a Matrix, so it is staged in one: a transient copy
-            // of the batch, freed on return. Adding row by row would avoid the copy, but a bad row
-            // would then leave the rows before it added; this way a rejected call adds nothing.
-            vecdex::Matrix<float> batch(dim());
-            batch.append(rows.all());
             const std::unique_lock lock(mutex_);
             first = index_.size();
-            index_.add(batch);
+            // HnswIndex::add checks the whole batch before it stores any row, so a rejected call
+            // adds nothing.
+            index_.add(rows.view());
         }
         const std::span<std::int64_t> out(ids.mutable_data(), rows.count());
         std::iota(out.begin(), out.end(), static_cast<std::int64_t>(first));
@@ -237,9 +231,10 @@ public:
         {
             const py::gil_scoped_release release;
             const std::shared_lock lock(mutex_);
-            for (std::size_t q = 0; q < queries.count(); ++q) {
+            const vecdex::MatrixView<float> rows = queries.view();
+            for (std::size_t q = 0; q < rows.rows(); ++q) {
                 const std::vector<vecdex::Neighbor> found =
-                    index_.search(queries.row(q), want, breadth);
+                    index_.search(rows.row(q), want, breadth);
                 const std::span<std::int64_t> row_ids = all_ids.subspan(q * want, want);
                 const std::span<float> row_distances = all_distances.subspan(q * want, want);
                 for (std::size_t i = 0; i < want; ++i) {
@@ -288,9 +283,9 @@ PYBIND11_MODULE(_core, m) {
             seed: seeds the random layer of each node. The same vectors added in the same
                 order with the same seed build the same graph.
 
-        Input arrays must already be float32 and C-contiguous: nothing is converted silently.
-        Several threads may use one index: searches run in parallel with each other, and
-        add_items runs alone. Both release the GIL.
+        Input arrays must already be float32 and C-contiguous: they are read in place, and
+        nothing is converted silently. Several threads may use one index: searches run in
+        parallel with each other, and add_items runs alone. Both release the GIL.
     )doc")
         .def(py::init<std::string_view, std::int64_t, std::int64_t, std::int64_t, std::uint64_t>(),
              py::arg("space"), py::arg("dim"), py::arg("M") = defaults.M,
@@ -300,13 +295,12 @@ PYBIND11_MODULE(_core, m) {
 
             Args:
                 data: a float32, C-contiguous array of shape (n, dim), or (dim,) for one vector.
+                    It is read in place, not copied.
 
             Raises TypeError if data isn't float32, and ValueError for a wrong shape, a
             non-contiguous or unaligned array, NaN or infinite values, or, under 'cosine', a
-            zero vector. A rejected call adds nothing.
-
-            The batch is staged in one transient copy before it is stored, so the call needs
-            about n * dim * 4 bytes beyond the index itself until it returns.
+            zero vector. The whole batch is checked before any of it is stored, so a rejected
+            call adds nothing.
         )doc")
         .def("knn_query", &PyIndex::knn_query, py::arg("data"), py::arg("k") = 1,
              py::arg("ef") = py::none(), R"doc(
