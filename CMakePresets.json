@@ -27,6 +27,15 @@
             }
         },
         {
+            "name": "tsan",
+            "displayName": "Debug + ThreadSanitizer (can't be combined with ASan)",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-O1 -fsanitize=thread -fno-omit-frame-pointer"
+            }
+        },
+        {
             "name": "release",
             "displayName": "Release (-O3 -DNDEBUG)",
             "inherits": "base",
@@ -39,6 +48,7 @@
     "buildPresets": [
         { "name": "debug", "configurePreset": "debug" },
         { "name": "asan", "configurePreset": "asan" },
+        { "name": "tsan", "configurePreset": "tsan" },
         { "name": "release", "configurePreset": "release" }
     ],
     "testPresets": [
@@ -54,6 +64,12 @@
             "inherits": "base",
             "configurePreset": "asan",
             "environment": { "UBSAN_OPTIONS": "print_stacktrace=1" }
+        },
+        {
+            "name": "tsan",
+            "inherits": "base",
+            "configurePreset": "tsan",
+            "environment": { "TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1" }
         },
         { "name": "release", "inherits": "base", "configurePreset": "release" }
     ],
@@ -72,6 +88,14 @@
                 { "type": "configure", "name": "asan" },
                 { "type": "build", "name": "asan" },
                 { "type": "test", "name": "asan" }
+            ]
+        },
+        {
+            "name": "tsan",
+            "steps": [
+                { "type": "configure", "name": "tsan" },
+                { "type": "build", "name": "tsan" },
+                { "type": "test", "name": "tsan" }
             ]
         },
         {

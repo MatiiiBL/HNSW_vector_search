@@ -22,6 +22,10 @@ jobs:
       matrix:
         cxx: [g++-14, clang++-18]
         preset: [asan, release]
+        # ThreadSanitizer: one compiler is enough to find data races in our code.
+        include:
+          - cxx: clang++-18
+            preset: tsan
     env:
       CXX: ${{ matrix.cxx }}
       # Fails the kernel tests if this runner can't run the AVX2 path, instead of silently
@@ -42,9 +46,9 @@ jobs:
         run: scripts/download_siftsmall.sh
 
       # Recent Ubuntu kernels randomize mmap addresses with more bits than the sanitizer
-      # runtimes expect, which makes ASan crash at startup.
-      - name: Make the kernel ASan-compatible
-        if: matrix.preset == 'asan'
+      # runtimes expect, which makes ASan and TSan crash at startup.
+      - name: Make the kernel sanitizer-compatible
+        if: matrix.preset != 'release'
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Configure, build and test
@@ -81,12 +85,15 @@ jobs:
           cmake --preset debug
           cmake --build --preset debug
 
-      # Catches reads of uninitialized memory, which ASan doesn't detect.
+      # Catches reads of uninitialized memory, which ASan doesn't detect. Skips the two tests that
+      # compare recall over many parallel builds: memcheck runs threads one at a time, about 90x
+      # slower than native, so they would add over 15 minutes. Parallel add and batch search
+      # still run here, in the smaller HnswParallel and HnswBatch tests.
       - name: Run the tests under memcheck
         run: >
           valgrind --error-exitcode=1 --leak-check=full
           --errors-for-leak-kinds=definite,indirect --track-origins=yes
-          build/debug/tests/vecdex_tests
+          build/debug/tests/vecdex_tests --gtest_filter=-HnswParallel.MatchesSerialRecall*
 
   macos:
     name: macOS arm64 · Apple clang · ${{ matrix.preset }}
