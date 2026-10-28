@@ -72,10 +72,13 @@ public:
 
     // Stores and links one vector; returns its id.
     Id add(std::span<const float> vector);
-    // Stores and links every row of `vectors`; they get consecutive ids starting at size().
-    // num_threads > 1 links them in parallel, and 0 means one thread per hardware thread. A
-    // parallel build is as good but not reproducible, because the graph depends on how the
-    // threads interleave; with one thread the graph is the same as adding the rows one by one.
+    // Stores and links every row of `vectors`; they get consecutive ids starting at size(). All
+    // rows are validated before any is stored. num_threads > 1 links them in parallel, and 0 means
+    // one thread per hardware thread. A parallel build is as good but not reproducible, because
+    // the graph depends on how the threads interleave; with one thread the graph is the same as
+    // adding the rows one by one. The view lets callers add rows they own (a NumPy array, say)
+    // without copying them into a Matrix first.
+    void add(MatrixView<float> vectors, std::size_t num_threads = 1);
     void add(const Matrix<float>& vectors, std::size_t num_threads = 1);
 
     // Up to k approximate nearest neighbors of `query`, closest first, ties by smaller id.
@@ -85,7 +88,7 @@ public:
 
     // search() for every row of `queries`, spread over num_threads threads (0: one per hardware
     // thread). Element i is exactly what search() returns for row i, whatever the thread count.
-    std::vector<std::vector<Neighbor>> search_batch(const Matrix<float>& queries, std::size_t k,
+    std::vector<std::vector<Neighbor>> search_batch(MatrixView<float> queries, std::size_t k,
                                                     std::size_t ef,
                                                     std::size_t num_threads = 0) const;
 

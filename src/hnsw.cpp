@@ -249,6 +249,10 @@ Id HnswIndex::add(std::span<const float> vector) {
 }
 
 void HnswIndex::add(const Matrix<float>& vectors, std::size_t num_threads) {
+    add(MatrixView<float>(vectors), num_threads);
+}
+
+void HnswIndex::add(MatrixView<float> vectors, std::size_t num_threads) {
     detail::check_new_vectors("HnswIndex::add", shape_of(*this), vectors.dim(), vectors.data());
     const std::size_t first = size();
     const std::size_t total = first + vectors.rows();
@@ -479,8 +483,8 @@ std::vector<Neighbor> HnswIndex::search(std::span<const float> query, std::size_
     return search_unchecked(query, k, ef);
 }
 
-std::vector<std::vector<Neighbor>> HnswIndex::search_batch(const Matrix<float>& queries,
-                                                           std::size_t k, std::size_t ef,
+std::vector<std::vector<Neighbor>> HnswIndex::search_batch(MatrixView<float> queries, std::size_t k,
+                                                           std::size_t ef,
                                                            std::size_t num_threads) const {
     std::vector<std::vector<Neighbor>> results(queries.rows());
     // Each query borrows its own scratch from the pool and writes only its own element of

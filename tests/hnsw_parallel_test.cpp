@@ -11,8 +11,10 @@
 #include <filesystem>
 #include <limits>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -28,6 +30,7 @@ using vecdex::GraphReport;
 using vecdex::HnswIndex;
 using vecdex::HnswParams;
 using vecdex::Matrix;
+using vecdex::MatrixView;
 using vecdex::Metric;
 using vecdex::Neighbor;
 
@@ -221,6 +224,54 @@ TEST(HnswParallel, RejectedBatchLeavesTheIndexUnchanged) {
     EXPECT_TRUE(index.inspect().violations.empty());
 }
 
+// add() is chosen by the argument's type, never by the argument count alone: a flat buffer of
+// floats is one vector, and a batch must state its row width (a Matrix or a MatrixView). An
+// ambiguous call would fail to compile here.
+template <typename... Args>
+using AddResult = decltype(std::declval<HnswIndex&>().add(std::declval<Args>()...));
+
+template <typename... Args>
+concept CanAdd =
+    requires(HnswIndex& index, Args&&... args) { index.add(std::forward<Args>(args)...); };
+
+static_assert(std::is_same_v<AddResult<std::span<const float>>, vecdex::Id>);
+static_assert(std::is_same_v<AddResult<std::vector<float>>, vecdex::Id>);
+static_assert(std::is_same_v<AddResult<const Matrix<float>&>, void>);
+static_assert(std::is_same_v<AddResult<const Matrix<float>&, std::size_t>, void>);
+static_assert(std::is_same_v<AddResult<MatrixView<float>>, void>);
+static_assert(std::is_same_v<AddResult<MatrixView<float>, std::size_t>, void>);
+static_assert(!CanAdd<std::vector<float>, std::size_t>);  // a flat buffer is never a batch
+static_assert(!CanAdd<std::span<const float>, std::size_t>);
+
+TEST(HnswParallel, BraceInitCallsPickTheIntendedAdd) {
+    HnswIndex index(2);
+    const std::vector<float> one{1.0F, 2.0F};
+    EXPECT_EQ(index.add({one.data(), one.size()}), 0U);  // a span: one vector, returns its id
+    const std::vector<float> two{3.0F, 4.0F, 5.0F, 6.0F};
+    index.add({two, 2}, 2);  // a MatrixView: two rows of 2
+    index.add(Matrix<float>(2, 2), 2);
+    EXPECT_EQ(index.size(), 5U);
+}
+
+// Rows the caller owns, added without copying them into a Matrix (what the Python bindings need).
+// As for every add(), all rows are validated before any is stored.
+TEST(HnswParallel, AddsRowsFromAView) {
+    const Matrix<float> base = integer_matrix(300, 8, 1);
+    const std::vector<float> owned(base.data().begin(), base.data().end());
+    HnswIndex index(8);
+    index.add(MatrixView<float>(owned, 8), 4);
+    ASSERT_EQ(index.size(), base.rows());
+    expect_healthy(index.inspect(), base.rows(), "view");
+    for (std::size_t r = 0; r < base.rows(); r += 37) {  // ef = n: exhaustive on a connected graph
+        EXPECT_EQ(index.search(base.row(r), 1, base.rows()).front().id, r);
+    }
+
+    const std::vector<float> partial(20);  // 2.5 rows of 8: not even a valid view
+    EXPECT_THROW(index.add(MatrixView<float>(partial, 8), 4), std::invalid_argument);
+    EXPECT_THROW(index.add(MatrixView<float>(owned, 4), 4), std::invalid_argument);  // wrong width
+    EXPECT_EQ(index.size(), base.rows());
+}
+
 // Identical vectors are the worst case for contention: all at distance 0 from one another, they
 // link into the same few nodes, whose full lists every insert then re-selects. A small M makes
 // lists overflow sooner. Runs under ThreadSanitizer like everything else.
@@ -260,6 +311,8 @@ TEST(HnswBatch, MatchesSequentialSearches) {
             EXPECT_EQ(index.search_batch(queries, 10, 32, threads), expected)
                 << "metric " << static_cast<int>(metric) << ", " << threads << " threads";
         }
+        const std::vector<float> owned(queries.data().begin(), queries.data().end());
+        EXPECT_EQ(index.search_batch(MatrixView<float>(owned, queries.dim()), 10, 32, 2), expected);
     }
 }
 
