@@ -14,7 +14,8 @@ On SIFT1M (1M × 128), on one core of an Apple M4:
   version, mostly from software prefetching, which a profile pointed to.
 - **1.96× hnswlib** using the *same* NEON distance kernel, **2.66× stock hnswlib** (whose SIMD
   and prefetch code is compiled out on ARM), and **1.78× FAISS HNSW**, all at recall@10 ≥ 0.95
-  with the same build parameters.
+  with the same build parameters. On GloVe-100 (cosine, a harder dataset) the margin over FAISS
+  is 2.35×.
 - **A 1M-vector build in 142 s on one thread, and 28 s on 10.** It uses per-node locks, recall
   doesn't change, and ThreadSanitizer finds no races.
 - **A 650 MB index reloads in 0.44 s,** checksummed and validated as untrusted input (fuzzed with
@@ -127,9 +128,20 @@ gets slightly higher recall per ef.
 | FAISS `IndexHNSWFlat` 1.15 | 18,138 | 10,083 | 5,340 | 246 s | 656 MB |
 | hnswlib 0.8.0 (pip) | 11,465 | 6,706 | 3,752 | 355 s | 661 MB |
 
+**GloVe-100** (1.18M × 100 word vectors, cosine as inner product on unit vectors, efSearch up
+to 1,024) is much harder: every library needs ef ≈ 1,000 for 0.95, and none reaches 0.99.
+
+| GloVe-100, from Python | QPS at recall ≥ 0.90 | ≥ 0.95 | Build | Index size |
+|---|---|---|---|---|
+| **vecdex** | **2,438** | **1,259** | **212 s** | 665 MB |
+| FAISS `IndexHNSWFlat` 1.15 | 1,076 | 536 | 355 s | 644 MB |
+| hnswlib 0.8.0 (pip) | 1,144 | 618 | 480 s | 649 MB |
+
+![Recall vs. QPS on GloVe-100](bench/results/glove-100-python.png)
+
 Index size is each library's own report (vecdex's `memory_bytes()`, hnswlib's file size, FAISS's
-serialized size), so it's comparable only roughly. In all three, the vectors take 512 MB of
-it.
+serialized size), so it's comparable only roughly. On SIFT1M the vectors take 512 MB of it in all
+three.
 
 ### Python binding overhead
 
@@ -316,8 +328,6 @@ tests/              GoogleTest suite, fuzz target
 - No vector compression (product quantization): 1M × 128 floats take 512 MB of the 650 MB index.
 - The file format isn't `mmap`-able (sections aren't aligned), so loading reads the whole file.
 - No filtered search (e.g. metadata predicates during the graph walk).
-- Results so far are SIFT1M only. A GloVe-100 (cosine) sweep is scripted (`bench/compare`) and
-  will be added.
 - Next candidates: an interleaved layer-0 layout (links next to vectors), PQ, and
   x86 benchmarks.
 

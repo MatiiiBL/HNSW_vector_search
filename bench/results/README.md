@@ -7,8 +7,9 @@ The raw output behind the numbers in the top-level README. Every file is a CSV w
 
 ## Where each file came from
 
-All runs are SIFT1M (1M × 128, L2, 10,000 queries), M = 16, efConstruction = 200, k = 10, on a
-13" MacBook Air M4 (4P + 6E cores, 16 GB, macOS 27, Apple clang 21, Release `-O3`).
+Runs use SIFT1M (1M × 128, L2, 10,000 queries) or GloVe-100 (1,183,514 × 100, unit-length
+vectors, inner product = cosine ranking, 10,000 queries), with M = 16, efConstruction = 200 and
+k = 10, on a 13" MacBook Air M4 (4P + 6E cores, 16 GB, macOS 27, Apple clang 21, Release `-O3`).
 
 | Files | Tool | Code |
 |---|---|---|
@@ -18,10 +19,11 @@ All runs are SIFT1M (1M × 128, L2, 10,000 queries), M = 16, efConstruction = 20
 | `sift1m/cpp-vecdex-prefetch.csv` | `vecdex_eval` | `3051c93` |
 | `sift1m/cpp-vecdex-threads-N.csv` | `vecdex_eval --threads N --ef 64,128` | `2ba3349` |
 | `sift1m/sift-{faiss-hnsw,hnswlib,vecdex}.csv` | `bench/compare/compare.py` (Python, batched, 1 thread) | `2ba3349`, faiss-cpu 1.15.1, hnswlib 0.8.0 (pip) |
+| `glove100/glove-100-*.csv` | `compare.py --metric ip --ef 10,...,1024` | same |
 
-Plots: `sift-python.png` (FAISS, hnswlib, vecdex from Python), `sift1m-cpp.png` (the C++
-harness), `sift1m-optimizations.png` (vecdex before and after each M4 optimization). They're made
-by `scripts/plot_recall_qps.py`.
+Plots: `sift-python.png` and `glove-100-python.png` (FAISS, hnswlib, vecdex from Python),
+`sift1m-cpp.png` (the C++ harness), `sift1m-optimizations.png` (vecdex before and after each M4
+optimization). They're made by `scripts/plot_recall_qps.py`.
 
 ## Conditions
 
@@ -35,8 +37,11 @@ by `scripts/plot_recall_qps.py`.
   15:40. The lid was closed but the Mac was plugged in, with `caffeinate` holding it awake
   (display off). A control run in that window gave vecdex 17,935 QPS at ef = 64 against 17,972 in
   the night run (0.2% apart), so the display-off state didn't throttle anything.
+- **The GloVe-100 runs** ran on 2026-10-29 between 20:12 and 20:44, plugged in, under the same
+  `caffeinate`, with the load average between 1.6 and 2.9. The lid was closed at 20:20 and opened
+  again at 20:28, during the hnswlib run. `pmset -g log` shows no sleep.
 - **Runs the machine slept through were thrown out,** checked against `pmset -g log`. That
-  includes a first attempt at GloVe-100, which isn't here yet.
+  includes a first GloVe-100 attempt.
 
 ## Reproducing
 
