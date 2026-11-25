@@ -451,6 +451,17 @@ HnswIndex HnswIndex::load(const std::filesystem::path& path) {
     if (!detail::all_finite(vectors.data())) {
         fail(path, "a stored vector contains NaN or infinity");
     }
+    // A finite vector can still make a NaN distance under the inner product (vector_ops.hpp).
+    // add() never stores such a vector, and under cosine it stores unit vectors.
+    if (layout.metric != Metric::L2) {
+        for (std::size_t node = 0; node < layout.nodes; ++node) {
+            if (!detail::fits_inner_product(vectors.row(node))) {
+                fail(path,
+                     std::format("vector {} is longer than 2^63, too long for the {} metric", node,
+                                 layout.metric == Metric::Cosine ? "cosine" : "inner-product"));
+            }
+        }
+    }
     HnswIndex index(layout.dim, layout.metric, layout.params);
     index.vectors_ = std::move(vectors);
     index.upper_ = split_upper(upper, levels, layout.upper_block);

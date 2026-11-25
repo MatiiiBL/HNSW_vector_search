@@ -13,6 +13,7 @@
 //   build/fuzz/tests/vecdex_load_fuzzer build/fuzz/corpus -max_total_time=300
 // An empty corpus directory is seeded with small valid indexes, one per metric.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -99,7 +100,12 @@ void check_usable(vecdex::HnswIndex& index) {
     }
     const std::vector<float> query(index.dim(), 0.5F);
     const std::size_t size = index.size();
-    (void)index.search(query, 5, 16);
+    // A NaN distance breaks the ordering that search's heaps and sorts rely on.
+    for (const vecdex::Neighbor& found : index.search(query, 5, 16)) {
+        if (std::isnan(found.distance)) {
+            std::abort();
+        }
+    }
     if (index.add(query) != size || !index.inspect().violations.empty()) {
         std::abort();
     }

@@ -33,6 +33,11 @@ void normalize(std::span<float> v) noexcept {
     }
 }
 
+bool fits_inner_product(std::span<const float> v) noexcept {
+    // Finite, nonnegative terms: the sum is finite or +inf, never NaN, and +inf fails the test.
+    return inner_product(v, v) <= kMaxSquaredLength;
+}
+
 void check_new_vectors(std::string_view where, const IndexShape& index, std::size_t given_dim,
                        std::span<const float> values) {
     if (given_dim != index.dim) {
@@ -55,6 +60,17 @@ void check_new_vectors(std::string_view where, const IndexShape& index, std::siz
             }
         }
     }
+    // Cosine needs no length check: it stores unit vectors.
+    if (index.metric == Metric::InnerProduct) {
+        for (std::size_t r = 0; r < count; ++r) {
+            if (!fits_inner_product(values.subspan(r * index.dim, index.dim))) {
+                throw std::invalid_argument(std::format(
+                    "{}: vector {} is longer than 2^63, too long for the inner-product metric (its "
+                    "inner products could overflow)",
+                    where, r));
+            }
+        }
+    }
 }
 
 void check_query(std::string_view where, const IndexShape& index, std::span<const float> query,
@@ -72,6 +88,10 @@ void check_query(std::string_view where, const IndexShape& index, std::span<cons
     if (index.metric == Metric::Cosine && !can_normalize(query)) {
         throw std::invalid_argument(
             std::format("{}: the cosine metric can't normalize a zero query", where));
+    }
+    if (index.metric == Metric::InnerProduct && !fits_inner_product(query)) {
+        throw std::invalid_argument(std::format(
+            "{}: query is longer than 2^63, too long for the inner-product metric", where));
     }
 }
 

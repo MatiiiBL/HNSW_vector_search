@@ -174,6 +174,18 @@ TEST(BruteForceCosine, IgnoresVectorLength) {
     EXPECT_EQ(index.search(std::vector<float>{2.0F, 0.0F}, 3), expected);
 }
 
+// As in HnswIndex: a vector longer than 2^63 could give an inner product of +inf - inf = NaN.
+TEST(BruteForceInnerProduct, RejectsVectorsLongEnoughToOverflow) {
+    BruteForceIndex index(2, vecdex::Metric::InnerProduct);
+    index.add(std::vector<float>{0x1p63F, 0.0F});
+    EXPECT_THROW(index.add(std::vector<float>{3e38F, -3e38F}), std::invalid_argument);
+    Matrix<float> batch(2, 2);
+    batch.row(1)[0] = 3e38F;
+    EXPECT_THROW(index.add(batch), std::invalid_argument);
+    EXPECT_EQ(index.size(), 1U);
+    EXPECT_THROW(index.search(std::vector<float>{3e38F, 3e38F}, 1), std::invalid_argument);
+}
+
 TEST(BruteForceCosine, RejectsZeroVectors) {
     BruteForceIndex index(2, vecdex::Metric::Cosine);
     EXPECT_THROW(index.add(std::vector<float>{0.0F, 0.0F}), std::invalid_argument);
