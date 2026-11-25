@@ -169,13 +169,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Python 3.13 on both systems, plus the oldest version pyproject.toml accepts and the
+        # newest release, on Linux.
         include:
           - os: ubuntu-24.04
             platform: Linux x86-64 · g++-14
             cxx: g++-14
+            python: "3.13"
           - os: macos-15
             platform: macOS arm64 · Apple clang
             cxx: clang++
+            python: "3.13"
+          - os: ubuntu-24.04
+            platform: Linux x86-64 · g++-14 · Python 3.10
+            cxx: g++-14
+            python: "3.10"
+          - os: ubuntu-24.04
+            platform: Linux x86-64 · g++-14 · Python 3.14
+            cxx: g++-14
+            python: "3.14"
     env:
       CXX: ${{ matrix.cxx }}
     steps:
@@ -183,7 +195,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
 
       - name: Restore siftsmall
         id: siftsmall
