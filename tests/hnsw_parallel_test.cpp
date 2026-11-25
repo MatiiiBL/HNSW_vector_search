@@ -210,7 +210,11 @@ TEST(HnswParallel, ExtendsAnExistingIndex) {
 
     const std::vector<float> extra(base.dim(), 127.0F);  // a corner no random row sits on
     EXPECT_EQ(index.add(extra), base.rows());
-    EXPECT_EQ(index.search(extra, 1, 10).front().id, base.rows());
+    // ef covers every node, so the search can't stop early: this checks that the new node is
+    // linked into the graph, not how well an approximate search finds an outlier. At ef = 10 it
+    // missed the node in 14 of 12,000 parallel builds under CPU contention, stopping at the
+    // nearest base row, although the node was reachable every time.
+    EXPECT_EQ(index.search(extra, 1, index.size()).front().id, base.rows());
     expect_healthy(index.inspect(), base.rows() + 1, "after a serial add");
 }
 
