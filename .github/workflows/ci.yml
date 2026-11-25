@@ -95,6 +95,44 @@ jobs:
           --errors-for-leak-kinds=definite,indirect --track-origins=yes
           build/debug/tests/vecdex_tests --gtest_filter=-HnswParallel.MatchesSerialRecall*
 
+  fuzz:
+    name: Linux x86-64 · clang++-18 · libFuzzer (HnswIndex::load)
+    runs-on: ubuntu-24.04
+    env:
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@v7
+
+      # As in the sanitizer jobs: ASan crashes at startup under the kernel's default mmap
+      # randomization.
+      - name: Make the kernel sanitizer-compatible
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build the fuzzer (Debug, ASan + UBSan, libFuzzer)
+        run: |
+          cmake -S . -B build/fuzz -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+                -DVECDEX_SANITIZE=ON -DVECDEX_BUILD_FUZZERS=ON
+          cmake --build build/fuzz --target vecdex_load_fuzzer
+
+      # A smoke run, not a campaign: a fixed seed and input count, so every run tries about the
+      # same inputs and a failure points at the change, not at luck. It starts from the valid
+      # indexes the fuzzer writes into an empty corpus. Longer runs stay local (see
+      # tests/load_fuzzer.cpp).
+      - name: Fuzz the index loader
+        run: |
+          mkdir -p build/fuzz/corpus build/fuzz/findings
+          build/fuzz/tests/vecdex_load_fuzzer build/fuzz/corpus -seed=1 -runs=200000 \
+              -artifact_prefix=build/fuzz/findings/
+
+      # The input that failed, to reproduce it locally: vecdex_load_fuzzer <file>.
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-findings
+          path: build/fuzz/findings/
+          if-no-files-found: ignore
+
   macos:
     name: macOS arm64 · Apple clang · ${{ matrix.preset }}
     runs-on: macos-15

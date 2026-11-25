@@ -300,14 +300,16 @@ tests/              GoogleTest suite, fuzz target
   many runs).
 - 79 Python tests, including GIL release and lock tests that were confirmed to fail without the
   feature they test (negative controls).
-- CI on every push, 10 jobs:
+- CI on every pull request and every push to main, 11 jobs:
   - Linux GCC 14 and Clang 18 under ASan + UBSan, and in Release;
   - ThreadSanitizer;
   - Valgrind memcheck;
+  - the index loader under libFuzzer with ASan + UBSan (200,000 inputs, a fixed seed);
   - macOS arm64 under ASan + UBSan, and in Release;
   - the Python package on Linux and macOS.
-- A libFuzzer target for the index loader (1.5M inputs, no findings), clang-tidy with a committed
-  configuration, and `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`.
+- A libFuzzer target for the index loader (1.5M inputs in a local run, no findings), clang-tidy
+  with a committed configuration, and
+  `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror`.
 
 ## Benchmark methodology
 
