@@ -307,6 +307,18 @@ def test_cosine_rejects_zero_vectors():
         index.knn_query(np.zeros(DIM, dtype=np.float32))
 
 
+def test_ip_rejects_vectors_too_long_for_finite_inner_products():
+    # Past a length of 2^63, an inner product can overflow, and +inf - inf in the sum is NaN.
+    index = build("ip", random_vectors(10))
+    batch = random_vectors(3, seed=1)
+    batch[2] = 3e38
+    with pytest.raises(ValueError, match=r"longer than 2\^63"):
+        index.add_items(batch)
+    assert len(index) == 10
+    with pytest.raises(ValueError, match=r"longer than 2\^63"):
+        index.knn_query(batch[2])
+
+
 @pytest.mark.parametrize(
     "kwargs, message",
     [

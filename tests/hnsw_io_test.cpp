@@ -630,6 +630,31 @@ TEST(HnswSaveLoad, HostileGraphsAreRejected) {
         "NaN or infinity");
 }
 
+// Under the inner product and cosine, a stored vector longer than 2^63 could make a distance NaN
+// (+inf - inf in the kernel), which add() rules out by rejecting such vectors. A file can still
+// hold one, so load() checks. For cosine, whose vectors should have unit length, this is the
+// part of that rule a hostile file must not break. Squared L2 can't make NaN, so it loads.
+TEST(HnswSaveLoad, VectorsTooLongForTheInnerProductAreRejected) {
+    const TempDir dir;
+    for (const Metric metric : {Metric::InnerProduct, Metric::Cosine, Metric::L2}) {
+        SCOPED_TRACE(::testing::Message() << "metric " << static_cast<int>(metric));
+        Bytes file = saved_bytes(build(12, 2, metric, params(2, 8)), dir);
+        const Sections s = sections_of(file);
+        put(file, s.vector_at(3), 3e38F);
+        put(file, s.vector_at(3) + sizeof(float), -3e38F);
+        reseal(file);
+        if (metric != Metric::L2) {
+            EXPECT_TRUE(rejected(dir / "long.vdx", file, "vector 3 is longer than 2^63"));
+            continue;
+        }
+        write_file(dir / "long.vdx", file);
+        HnswIndex index = HnswIndex::load(dir / "long.vdx");
+        EXPECT_EQ(index.search(std::vector<float>{3e38F, -3e38F}, 1, 20).front().id, 3U);
+        EXPECT_EQ(index.add(std::vector<float>{1e38F, 1e38F}), 12U);
+        EXPECT_TRUE(index.inspect().violations.empty());
+    }
+}
+
 TEST(HnswSaveLoad, OtherFilesAreRejected) {
     const TempDir dir;
     Bytes file = saved_bytes(tiny_index(), dir);

@@ -360,8 +360,9 @@ PYBIND11_MODULE(_core, m) {
 
             Raises TypeError if data isn't float32, and ValueError for a wrong shape, a
             non-contiguous or unaligned array, NaN or infinite values, under 'cosine' a zero
-            vector, or a negative num_threads. The whole batch is checked before any of it is
-            stored, so a rejected call adds nothing.
+            vector, under 'ip' a vector longer than 2**63 (its inner products could overflow),
+            or a negative num_threads. The whole batch is checked before any of it is stored,
+            so a rejected call adds nothing.
         )doc")
         .def("knn_query", &PyIndex::knn_query, py::arg("data"), py::arg("k") = 1,
              py::arg("ef") = py::none(), py::kw_only(), py::arg("num_threads") = 1, R"doc(

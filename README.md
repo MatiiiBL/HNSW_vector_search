@@ -283,7 +283,8 @@ tests/              GoogleTest suite, fuzz target
   the directory is flushed. A power cut leaves the old index or the new one, never neither.
 - **Loading treats the file as hostile.** Every count is checked against the file size before
   anything is allocated, then the checksum, then the graph itself (ids in range, no self or
-  duplicate links, layers consistent), before any link is followed.
+  duplicate links, layers consistent) and the vectors (finite, and under inner product and
+  cosine short enough that no inner product overflows), before any link is followed.
 - **The Python binding never copies silently.** float64 or non-contiguous input raises an error
   naming the one-line conversion, instead of copying a whole dataset behind your back. The cost
   is a documented contract: an array must not be modified by another thread during a call, the
@@ -293,11 +294,11 @@ tests/              GoogleTest suite, fuzz target
 
 ## Testing
 
-- 117 C++ tests, with recall checked against an exact brute-force baseline. They cover edge
+- 120 C++ tests, with recall checked against an exact brute-force baseline. They cover edge
   cases (k > n, empty index, duplicates, NaN), truncated and corrupted index files (every prefix
   length, every flipped bit), and parallel builds (recall within 0.005 of the serial build over
   many runs).
-- 78 Python tests, including GIL release and lock tests that were confirmed to fail without the
+- 79 Python tests, including GIL release and lock tests that were confirmed to fail without the
   feature they test (negative controls).
 - CI on every push, 10 jobs:
   - Linux GCC 14 and Clang 18 under ASan + UBSan, and in Release;

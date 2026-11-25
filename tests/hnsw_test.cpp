@@ -214,6 +214,37 @@ TEST(Hnsw, RejectsBadArgumentsAndLeavesTheIndexUnchanged) {
     EXPECT_EQ(cosine.size(), 0U);
 }
 
+// Finite vectors can still have an infinite inner product, and when terms of both signs overflow,
+// the kernel can add +inf and -inf into NaN. Before this check, searching (1e30, -1e30, 0, 0)
+// among (3e38, 3e38, 0, 0) and (1, 1, 1, 1) returned a NaN distance with the NEON and the scalar
+// kernels alike. A NaN breaks the ordering the heaps and sorts rely on, so under the inner product
+// a vector longer than 2^63 is rejected: up to that length, no inner product can overflow.
+TEST(Hnsw, InnerProductRejectsVectorsLongEnoughToOverflow) {
+    constexpr float kLongest = 0x1p63F;
+    HnswIndex index(2, Metric::InnerProduct);
+    index.add(std::vector<float>{kLongest, 0.0F});
+    index.add(std::vector<float>{0.0F, -kLongest});
+    EXPECT_THROW(index.add(std::vector<float>{3e38F, 3e38F}), std::invalid_argument);
+    Matrix<float> batch(2, 2);
+    batch.row(1)[0] = kLongest;
+    batch.row(1)[1] = kLongest;  // length 2^63.5
+    EXPECT_THROW(index.add(batch), std::invalid_argument);
+    EXPECT_EQ(index.size(), 2U);
+    EXPECT_THROW(index.search(std::vector<float>{3e38F, -3e38F}, 1, 10), std::invalid_argument);
+
+    // At the limit, every distance is finite: 1 - 2^126 and 1 - 0 here.
+    const std::vector<Neighbor> found = index.search(std::vector<float>{kLongest, 0.0F}, 2, 10);
+    ASSERT_EQ(found.size(), 2U);
+    EXPECT_EQ(found[0], (Neighbor{.distance = 1.0F - 0x1p126F, .id = 0}));
+    EXPECT_EQ(found[1], (Neighbor{.distance = 1.0F, .id = 1}));
+
+    // Squared L2 adds only nonnegative terms, so it can't make NaN and needs no such limit.
+    HnswIndex l2(2);
+    l2.add(std::vector<float>{3e38F, 3e38F});
+    l2.add(std::vector<float>{3e38F, -3e38F});
+    EXPECT_EQ(l2.search(std::vector<float>{3e38F, -3e38F}, 1, 10).front().id, 1U);
+}
+
 TEST(Hnsw, MovedFromIndexIsEmptyAndReusable) {
     HnswIndex a(2);
     a.add(std::vector<float>{1.0F, 0.0F});

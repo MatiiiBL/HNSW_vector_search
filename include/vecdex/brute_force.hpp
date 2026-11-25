@@ -17,7 +17,8 @@ namespace vecdex {
 // stored copies differ from the inputs and zero vectors are rejected.
 //
 // Errors: std::invalid_argument for bad arguments (dimension mismatch, k == 0, NaN or
-// infinite values, a zero vector under Cosine). A failed call leaves the index unchanged.
+// infinite values, a zero vector under Cosine, a vector longer than 2^63 under InnerProduct,
+// whose inner products could overflow). A failed call leaves the index unchanged.
 class BruteForceIndex {
 public:
     // Throws std::invalid_argument if dim is 0.

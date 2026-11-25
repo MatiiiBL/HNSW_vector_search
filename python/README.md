@@ -60,7 +60,8 @@ index = vecdex.Index.load("vectors.vdx")                # space, dim, M, ... fro
 - **Distances:** `"l2"` is the *squared* Euclidean distance, `"ip"` is `1 - <q, x>`, and
   `"cosine"` is `1 - cos(q, x)`. Cosine normalizes copies of your vectors, never your arrays.
 - **Errors:** `ValueError` for bad arguments and values (dimension mismatch, NaN or inf, a zero
-  vector under cosine, `k < 1`, `num_threads < 0`), `TypeError` for wrong types, and
+  vector under cosine, a vector longer than 2^63 under `"ip"`, whose inner products could
+  overflow, `k < 1`, `num_threads < 0`), `TypeError` for wrong types, and
   `RuntimeError` for a file that can't be saved or loaded.
 
 ## Threads

@@ -111,12 +111,12 @@ The checksum detects accidental damage: truncated copies, flipped bits, a file o
 4. The file size equals the formula above exactly. The arithmetic is overflow-checked, so wrapped-around products can't pass for small ones. **Nothing is allocated before this check**, and after it every buffer is bounded by the file's size.
 5. The checksum matches.
 6. Every level is ≤ the max level, the levels add up to U, and the entry point's level is the max level.
-7. Every vector component is finite. NaN would break the strict weak ordering the search heaps and sorts depend on.
+7. Every vector component is finite. NaN would break the strict weak ordering the search heaps and sorts depend on. Under InnerProduct and Cosine, every vector's squared length is also at most 2¹²⁶ (a length of 2⁶³), the limit `add` enforces under InnerProduct: a longer finite vector can have an infinite inner product with another, and when terms of both signs overflow, +inf + −inf makes the distance NaN.
 8. In every link block, before any link is followed: count ≤ the block's capacity (2M on layer 0, M above); every id is < n, is not the block's own node, and names a node that lives on that layer (level ≥ the layer); no id appears twice in one block.
 
 A loaded index therefore satisfies every invariant `HnswIndex::inspect()` reports on.
 
-Not checked: whether the graph is good for search (its connectivity, which `inspect()` measures but doesn't require), whether Cosine vectors have unit length, and whether `ef_construction` and `seed` are the values a caller would choose. None of these can make search or insertion unsafe.
+Not checked: whether the graph is good for search (its connectivity, which `inspect()` measures but doesn't require), whether Cosine vectors have unit length (only the bound of check 7), and whether `ef_construction` and `seed` are the values a caller would choose. None of these can make search or insertion unsafe.
 
 ## State that is not in the file
 

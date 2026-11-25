@@ -21,6 +21,19 @@ bool can_normalize(std::span<const float> v) noexcept;
 // Scales v to unit length. Precondition: can_normalize(v).
 void normalize(std::span<float> v) noexcept;
 
+// The largest squared length the inner product accepts: a length of 2^63. Finite vectors can
+// still have an infinite inner product, and when terms of both signs overflow, the kernel adds
+// +inf and -inf into NaN, which breaks the ordering every search relies on. Within this limit,
+// Cauchy-Schwarz bounds the inner product of two vectors, and every partial sum a kernel forms of
+// it, by 2^126: a quarter of float's largest value, a margin that float rounding can't use up at
+// any practical dimension (it would take millions). Squared L2 needs no limit: it adds only
+// nonnegative terms, so at worst it reaches +inf, which still ranks consistently.
+inline constexpr float kMaxSquaredLength = 0x1p126F;
+
+// True if v is short enough for the inner product (kMaxSquaredLength). Precondition:
+// all_finite(v).
+bool fits_inner_product(std::span<const float> v) noexcept;
+
 // What the shared checks need to know about an index.
 struct IndexShape {
     Metric metric;
